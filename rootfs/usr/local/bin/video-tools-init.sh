@@ -53,7 +53,7 @@ fi
 
 if [ ! -s "${RCLONE_DIR}/rclone.conf" ]; then
   log "no rclone.conf yet — Drive upload stays unavailable until configured"
-  log "  configure once from the browser terminal: rclone config"
+  log "  configure once: podman exec -it pi-web rclone config"
 fi
 
 touch "${SENTINEL}"

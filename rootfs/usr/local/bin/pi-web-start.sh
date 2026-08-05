@@ -100,6 +100,6 @@ cd "${HOME}"
 log "starting pi-web on ${PI_WEB_HOSTNAME}:${PORT}"
 log "  data dir : ${PI_CODING_AGENT_DIR}"
 log "  home     : ${HOME}"
-log "  image    : ${PI_AGENT_IMAGE_VERSION:-dev} (pi-web ${PI_WEB_VERSION:-?}, ttyd ${TTYD_VERSION:-?})"
+log "  image    : ${PI_AGENT_IMAGE_VERSION:-dev} (pi-web ${PI_WEB_VERSION:-?})"
 
 exec pi-web
