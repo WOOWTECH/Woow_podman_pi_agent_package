@@ -1,0 +1,44 @@
+# nginx — the only reason this container exists is pi-web's trust guard.
+#
+# pi-web's isApiRequestAllowed() rejects any request whose Host is not a
+# loopback name or a raw IP, AND any Origin that does not match. Reaching the
+# UI by raw LAN IP happens to satisfy the Host half on its own — but the
+# moment a hostname is involved (a Cloudflare Tunnel, a reverse proxy, an
+# internal DNS name), both halves fail and every auth-gated route answers
+# 403 "Untrusted API request": the UI loads and then does nothing.
+#
+# Nothing else can blank the Origin header. A tunnel's httpHostHeader option
+# covers Host only. That asymmetry is why this container is not optional once
+# any name is in front of the deployment.
+[Unit]
+Description=nginx — Host/Origin shim and TLS-free entry point for pi-web
+Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
+After=network-online.target pi-web.service
+Wants=network-online.target
+# Bound to pi-web's lifecycle on purpose. nginx resolves the pi-web container
+# name once at startup, so a recreated pi-web (new IP) would leave nginx
+# proxying to an address that no longer exists. PartOf makes systemd restart
+# this container whenever pi-web restarts, which re-reads the address. nginx
+# starts in well under a second, so the coupling costs nothing.
+Requires=pi-web.service
+PartOf=pi-web.service
+
+[Container]
+ContainerName=pi-agent-nginx
+Image=docker.io/library/nginx:1.27-alpine
+AutoUpdate=registry
+
+Network=pi-agent.network
+
+# LAN-reachable by decision. There is no authentication in front of this:
+# whoever reaches this port gets a coding agent with a bash tool. Change to
+# 127.0.0.1:30142:30142 to make it local-only.
+PublishPort=0.0.0.0:30142:30142
+
+Volume=%h/.config/pi-agent/nginx.conf:/etc/nginx/nginx.conf:ro
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

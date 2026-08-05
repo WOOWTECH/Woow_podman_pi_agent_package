@@ -1,0 +1,17 @@
+# Everything that must survive a container replacement lives here:
+# sessions/, skills/, home/ (the agent's per-session worktrees), models.json
+# with the provider configuration, settings.json, and the video pipeline's
+# venv/ and playwright-cache/.
+#
+# Deliberately a named Podman volume rather than a host bind mount. Under
+# rootless Podman a bind mount would carry host ownership into the user
+# namespace and the container's root would not be able to write it without
+# an idmap; a named volume is created with the right ownership from the start.
+[Unit]
+Description=pi-agent persistent data
+
+[Volume]
+VolumeName=pi-agent-data
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,50 @@
+# pi-web — the agent and its web UI.
+#
+# Deliberately publishes NO host port. The only way in is the nginx container
+# on the shared network, which is what rewrites Host and blanks Origin for
+# pi-web's isApiRequestAllowed() guard. Publishing this container directly
+# would expose an endpoint that answers /api/models-config with the provider
+# API key, unauthenticated.
+[Unit]
+Description=pi-web — pi coding agent web UI
+Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=pi-web
+Image=ghcr.io/woowtech/woow-podman-pi-agent:latest
+AutoUpdate=registry
+
+Network=pi-agent.network
+Volume=pi-agent-data.volume:/data/pi-agent
+
+# Bound on all interfaces INSIDE the container network namespace so the nginx
+# container can reach it by name. Nothing on the host can: no PublishPort.
+Environment=PI_WEB_HOSTNAME=0.0.0.0
+Environment=PI_WEB_PORT=30141
+Environment=PI_AGENT_DATA_DIR=/data/pi-agent
+Environment=LOG_LEVEL=info
+Environment=TZ=Asia/Taipei
+
+# Video pipeline: ffmpeg / Playwright-Chromium / edge-tts / rclone. The first
+# boot on a fresh volume downloads roughly 720MB in the background; the UI
+# serves normally throughout.
+Environment=VIDEO_PIPELINE_ENABLED=true
+# One-shot maintenance: set true, restart, wait for the reinstall, set back to
+# false. Left true it re-downloads ~720MB on every restart.
+Environment=RESET_VIDEO_TOOLS=false
+
+# The agent runs arbitrary model-authored code. Rootless already confines it to
+# the unprivileged host user; dropping the capabilities it never uses costs
+# nothing and narrows what a container escape would inherit.
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+# A cold volume plus the venv bootstrap can take minutes before /api/home
+# answers. systemd should not give up during that window.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
