@@ -7,6 +7,11 @@
 # last and cost tokens. Every check prints PASS/FAIL with the evidence inline,
 # so a failure is actionable without re-running anything.
 #
+# Set PI_ACC_PASS (and PI_ACC_USER, default 'woow') to also run the checks that
+# have to get past Basic auth. The suite cannot read the password itself: the
+# htpasswd is mounted into nginx alone, and mounting it anywhere pi-web could
+# see it would put the hash within reach of the agent's own read tool.
+#
 # Written to be comparable with the k3s deployment: the same properties, in the
 # same order, so a difference between the two is a porting defect rather than a
 # difference in how they were measured.
@@ -107,27 +112,59 @@ else
   skip "video pipeline disabled by VIDEO_PIPELINE_ENABLED"
 fi
 
-head_ "6. Trust guard and key exposure"
+head_ "6. Authentication, trust guard and key exposure"
 
-# The entire justification for the nginx container. Both halves are asserted:
-# a hostname must work THROUGH the proxy, and must fail without it. Testing
-# only the success half would leave a regression that removed the header
-# rewriting looking green while every named route in the browser broke.
-if curl -s -o /dev/null --max-time 5 "${PROXY}/api/home" 2>/dev/null; then
-  code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${PROXY}/api/models-config")
-  [ "$code" = "200" ] && ok "hostname Host+Origin through nginx -> 200 (shim works)" || bad "hostname through nginx -> ${code} (the Host/Origin rewrite is not applied)"
+AUTH_USER="${PI_ACC_USER:-woow}"
+AUTH_PASS="${PI_ACC_PASS:-}"
 
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${PROXY}/api/home" 2>/dev/null || echo 000)
+
+if [ "$code" = "000" ]; then
+  skip "nginx not reachable at ${PROXY} — set NGINX_HOST or run this from the pi-agent network"
+else
+  AUTH_ON=0
+  if [ "$code" = "401" ]; then
+    AUTH_ON=1
+    ok "unauthenticated request -> 401 (Basic auth is enforced at the edge)"
+    # A rule that accepts everything and a rule that accepts the right thing
+    # both answer 200 to the correct password. This is the only check that
+    # tells them apart, and the one that catches an htpasswd nginx cannot
+    # parse — which it treats as simply unmatched rather than as an error.
+    wrong=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --user "${AUTH_USER}:not-the-password-$$" "${PROXY}/api/home")
+    [ "$wrong" = "401" ] && ok "wrong password -> 401" || bad "wrong password -> ${wrong}, expected 401 — the credential check is not doing anything"
+  else
+    warn "unauthenticated request -> ${code}: there is NO password in front of the UI"
+    warn "  -> anyone who can reach :30142 gets a coding agent with a shell. Fix: scripts/set-password.sh"
+  fi
+
+  if [ "$AUTH_ON" = "1" ] && [ -z "${AUTH_PASS}" ]; then
+    skip "set PI_ACC_PASS to run the authenticated proxy checks (trust guard, key exposure)"
+  else
+    CURL_AUTH=""
+    [ -n "${AUTH_PASS}" ] && CURL_AUTH="--user ${AUTH_USER}:${AUTH_PASS}"
+
+    # The reason the nginx container exists at all: a hostname must work
+    # THROUGH the proxy, because pi-web rejects it directly.
+    # shellcheck disable=SC2086
+    code=$(curl -s -o /dev/null -w '%{http_code}' ${CURL_AUTH} -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${PROXY}/api/models-config")
+    [ "$code" = "200" ] && ok "hostname Host+Origin through nginx -> 200 (shim works)" || bad "hostname through nginx -> ${code} (the Host/Origin rewrite is not applied, or the password is wrong)"
+
+    # shellcheck disable=SC2086
+    if curl -s --max-time 5 ${CURL_AUTH} -H 'Host: pi.example.com' "${PROXY}/api/models-config" | grep -q '"apiKey":"[^"]'; then
+      if [ "$AUTH_ON" = "1" ]; then
+        warn "/api/models-config returns the provider key in cleartext to any authenticated caller, and to anything on the container network"
+      else
+        warn "/api/models-config returns the provider key in cleartext to an UNAUTHENTICATED caller through the published port"
+      fi
+    fi
+  fi
+
+  # Needs no credentials, and is the half that proves the shim is load-bearing
+  # rather than decorative. Without it, a regression that removed the header
+  # rewriting would leave this suite green while every named route in the
+  # browser broke.
   code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${BASE}/api/models-config")
   [ "$code" = "403" ] && ok "same headers direct to pi-web -> 403 (shim is load-bearing, not decorative)" || bad "direct to pi-web -> ${code}, expected 403 — the guard changed upstream; re-read nginx.conf's assumptions"
-
-  # Not a failure. Upstream behaviour that packaging cannot fix, restated on
-  # every run so it stays a decision rather than a discovery.
-  if curl -s --max-time 5 -H 'Host: pi.example.com' "${PROXY}/api/models-config" | grep -q '"apiKey":"[^"]'; then
-    warn "/api/models-config returns the provider key in cleartext to an unauthenticated caller through the published port"
-    warn "  -> anyone who can reach :30142 can read the key. Put an authenticating proxy in front, or bind PublishPort to 127.0.0.1."
-  fi
-else
-  skip "nginx not reachable at ${PROXY} — set NGINX_HOST or run this from the pi-agent network"
 fi
 
 head_ "Summary"
