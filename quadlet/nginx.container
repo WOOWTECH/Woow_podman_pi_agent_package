@@ -1,4 +1,5 @@
-# nginx — the only reason this container exists is pi-web's trust guard.
+# nginx — the only reason this container exists is pi-web's trust guard, and
+# now also the only place a credential check can live.
 #
 # pi-web's isApiRequestAllowed() rejects any request whose Host is not a
 # loopback name or a raw IP, AND any Origin that does not match. Reaching the
@@ -10,8 +11,13 @@
 # Nothing else can blank the Origin header. A tunnel's httpHostHeader option
 # covers Host only. That asymmetry is why this container is not optional once
 # any name is in front of the deployment.
+#
+# pi-web itself has no authentication of any kind — there is not one
+# auth-related environment variable in its server bundle — so the Basic auth
+# configured through the mounts below is the deployment's only credential
+# boundary.
 [Unit]
-Description=nginx — Host/Origin shim and TLS-free entry point for pi-web
+Description=nginx — Host/Origin shim and authenticating entry point for pi-web
 Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
 After=network-online.target pi-web.service
 Wants=network-online.target
@@ -30,12 +36,16 @@ AutoUpdate=registry
 
 Network=pi-agent.network
 
-# LAN-reachable by decision. There is no authentication in front of this:
-# whoever reaches this port gets a coding agent with a bash tool. Change to
+# LAN-reachable by decision, behind Basic auth. Change to
 # 127.0.0.1:30142:30142 to make it local-only.
 PublishPort=0.0.0.0:30142:30142
 
 Volume=%h/.config/pi-agent/nginx.conf:/etc/nginx/nginx.conf:ro
+# Both are always present, even when authentication is disabled — nginx treats
+# a missing include as a fatal startup error, and a bind mount with a
+# non-existent source makes Podman create a directory in its place.
+Volume=%h/.config/pi-agent/auth.conf:/etc/nginx/auth.conf:ro
+Volume=%h/.config/pi-agent/htpasswd:/etc/nginx/htpasswd:ro
 
 [Service]
 Restart=always
