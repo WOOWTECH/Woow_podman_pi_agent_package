@@ -9,6 +9,15 @@ set -euo pipefail
 # ordinary output instead of being split across two channels.
 exec 2>&1
 
+# Every file created from here on — including the ones pi-web writes itself —
+# is 600, and every directory 700. This is what actually protects the provider
+# API key. The chmod loop below only ever repaired models.json after the fact,
+# and pi-web recreates that file at 0644 each time the Models page is saved:
+# measured on a live deployment, the file was 644 for the entire period between
+# configuring the provider and the next restart, which is exactly the period it
+# contained a key.
+umask 077
+
 # shellcheck source=/dev/null
 source /usr/local/bin/pi-agent-env.sh
 
@@ -18,13 +27,14 @@ log() { printf '[pi-web] %s\n' "$*"; }
 mkdir -p "${DATA_DIR}/sessions" "${DATA_DIR}/home" "${DATA_DIR}/skills" "${DATA_DIR}/rclone"
 
 # --- Credential file modes ----------------------------------------------------
-# models.json holds the provider API key in plaintext and pi-web creates it 0644
-# on a volume any `podman exec -it pi-web bash` lands on as root. Tightened on
-# every boot because pi-web rewrites the file whenever the Models page is saved.
+# A repair pass, not the guarantee: umask above is what keeps newly created
+# files private. This exists for volumes first written by an older image, where
+# models.json is already on disk at 0644.
 #
-# This is defence in depth ONLY. It does not fix the two real problems, which
-# are upstream: GET /api/models-config returns the key unredacted and
-# unauthenticated, and the agent's own read tool can open the file. See README.
+# Either way this is defence in depth ONLY. It does not fix the two real
+# problems, which are upstream: GET /api/models-config returns the key
+# unredacted and unauthenticated, and the agent's own read tool can open the
+# file. See README.
 for f in models.json models-store.json auth.json rclone/rclone.conf; do
   [ -f "${DATA_DIR}/${f}" ] && chmod 600 "${DATA_DIR}/${f}" || true
 done
@@ -82,7 +92,13 @@ fi
 # into a failed start. The add-on ran it as an s6 oneshot with no dependency
 # edge — chat stays usable while the video tools install behind it. Same
 # semantics here: non-blocking, non-fatal, sentinel-guarded.
-if [ "${VIDEO_PIPELINE_ENABLED:-true}" = "true" ]; then
+#
+# Skipped outright on an image built with VIDEO_TOOLS=0: python3-venv is not
+# installed there, so the bootstrap can only fail, and it would fail loudly on
+# every single boot.
+if [ "${PI_VIDEO_TOOLS_BUILT:-1}" != "1" ]; then
+  log "video pipeline skipped — image built with VIDEO_TOOLS=0 (no ffmpeg, no Chromium libs)"
+elif [ "${VIDEO_PIPELINE_ENABLED:-true}" = "true" ]; then
   log "video pipeline enabled — bootstrapping in background"
   /usr/local/bin/video-tools-init.sh &
 else

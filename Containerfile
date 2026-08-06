@@ -1,5 +1,12 @@
 # Woow Podman Pi Agent — pi-web + the pi coding agent, built for rootless Podman.
 #
+# BUILD WITH --format=docker. This file uses SHELL and HEALTHCHECK, which the
+# OCI image format has no field for; buildah's default OCI output drops or
+# rejects them. Podman honours a Docker-format HEALTHCHECK natively and reports
+# it in `podman ps`, which is the whole reason it is here:
+#
+#   podman build --format=docker -t ghcr.io/woowtech/woow-podman-pi-agent:latest -f Containerfile .
+#
 # This is NOT the k3s image with Kubernetes bits removed. It is built for a
 # different runtime and the differences are deliberate:
 #
@@ -27,7 +34,10 @@ ENV LANG=C.UTF-8 \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Set VIDEO_TOOLS=0 to build a ~700MB image without the video toolchain.
-# Default 1 keeps parity with the k3s deployment.
+# Default 1 keeps parity with the k3s deployment. When you build with 0, also
+# set VIDEO_PIPELINE_ENABLED=false in the Quadlet unit — otherwise the
+# entrypoint starts a bootstrap that cannot succeed and logs a failed venv on
+# every boot.
 ARG VIDEO_TOOLS=1
 
 # Base runtime. ca-certificates/curl/git/gnupg/jq/openssh-client are needed by
@@ -111,6 +121,23 @@ ENV PI_AGENT_IMAGE_VERSION=${BUILD_VERSION} \
     PI_WEB_VERSION=${PI_WEB_VERSION} \
     PI_AGENT_DATA_DIR=/data/pi-agent \
     PI_WEB_PORT=30141
+
+# Baked into the image so EVERY entry point inherits them, not just login
+# shells. pi-agent-env.sh is sourced from /etc/profile.d, which `podman exec
+# pi-web bash` (interactive but not a login shell) and `podman exec pi-web bash
+# script.sh` never read. Those sessions then run with HOME=/root, so a
+# `pi install` from a shell writes the skill into the container's ephemeral
+# layer while the UI keeps reading the volume — the install reports success and
+# the skill never appears. Observed on the first Podman deployment.
+#
+# BASH_ENV covers non-interactive bash (including the agent's own bash tool) so
+# the venv PATH guard in pi-agent-env.sh still applies there.
+ENV HOME=/data/pi-agent/home \
+    PI_CODING_AGENT_DIR=/data/pi-agent \
+    PLAYWRIGHT_BROWSERS_PATH=/data/pi-agent/playwright-cache \
+    RCLONE_CONFIG=/data/pi-agent/rclone/rclone.conf \
+    BASH_ENV=/usr/local/bin/pi-agent-env.sh \
+    PI_VIDEO_TOOLS_BUILT=${VIDEO_TOOLS}
 
 # Podman runs this natively and reports it in `podman ps`. /api/home is the one
 # route that answers 200 on a fresh install with no session context.
