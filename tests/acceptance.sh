@@ -14,19 +14,26 @@ set -uo pipefail
 
 DATA="${PI_AGENT_DATA_DIR:-/data/pi-agent}"
 BASE="http://127.0.0.1:${PI_WEB_PORT:-30141}"
+PROXY="http://${NGINX_HOST:-pi-agent-nginx}:30142"
 CWD="${DATA}/home/pi-cwd-$(date +%Y%m%d)"
-PASS=0; FAIL=0
+PASS=0; FAIL=0; NOTE=0
 
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; PASS=$((PASS+1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAIL=$((FAIL+1)); }
+skip() { printf '  \033[90mSKIP\033[0m  %s\n' "$*"; }
+warn() { printf '  \033[33mNOTE\033[0m  %s\n' "$*"; NOTE=$((NOTE+1)); }
 head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 head_ "1. Runtime"
 
 if v=$(pi --version 2>/dev/null); then ok "pi on PATH — $v"; else bad "pi not on PATH (the launcher failed; terminal workflows are dead)"; fi
 if v=$(node --version 2>/dev/null); then ok "node — $v"; else bad "node missing"; fi
-[ -n "${PI_CODING_AGENT_DIR:-}" ] && ok "PI_CODING_AGENT_DIR=${PI_CODING_AGENT_DIR}" || bad "PI_CODING_AGENT_DIR unset"
-[ "${HOME}" = "${DATA}/home" ] && ok "HOME pinned to the volume — ${HOME}" || bad "HOME is ${HOME}, expected ${DATA}/home"
+# These must hold in a PLAIN exec, not only under `bash -l`. The image bakes
+# them as ENV for exactly that reason: /etc/profile.d reaches login shells only,
+# and a script run with `podman exec pi-web bash script.sh` would otherwise get
+# HOME=/root and write the agent's state into the ephemeral layer.
+[ -n "${PI_CODING_AGENT_DIR:-}" ] && ok "PI_CODING_AGENT_DIR=${PI_CODING_AGENT_DIR}" || bad "PI_CODING_AGENT_DIR unset in a non-login shell — the image ENV is missing"
+[ "${HOME}" = "${DATA}/home" ] && ok "HOME pinned to the volume — ${HOME}" || bad "HOME is ${HOME}, expected ${DATA}/home (non-login shells lose the volume)"
 [ "$(date +%Z)" != "UTC" ] && ok "timezone applied — $(date '+%Z %F %T')" || bad "still UTC; TZ did not apply"
 
 head_ "2. Persistence layout"
@@ -45,7 +52,10 @@ for f in models.json settings.json auth.json; do
   if [ -f "${DATA}/${f}" ]; then
     m=$(stat -c '%a' "${DATA}/${f}")
     case "${f}" in
-      models.json|auth.json) [ "$m" = "600" ] && ok "${f} mode ${m}" || bad "${f} mode ${m}, expected 600 (holds the provider key)" ;;
+      # 644 here means the entrypoint's umask is not in effect. pi-web recreates
+      # models.json every time the Models page is saved, so a mode that is only
+      # corrected at boot leaves the key world-readable for the whole session.
+      models.json|auth.json) [ "$m" = "600" ] && ok "${f} mode ${m}" || bad "${f} mode ${m}, expected 600 (holds the provider key; umask 077 not applied)" ;;
       *) ok "${f} present (mode ${m})" ;;
     esac
   fi
@@ -84,15 +94,42 @@ rm -rf "$T"
 
 head_ "5. Video pipeline"
 
-if [ "${VIDEO_PIPELINE_ENABLED:-true}" = "true" ]; then
+if [ "${PI_VIDEO_TOOLS_BUILT:-1}" != "1" ]; then
+  skip "image built with VIDEO_TOOLS=0 — no ffmpeg, Chromium libs, CJK fonts or rclone by design"
+  [ "${VIDEO_PIPELINE_ENABLED:-true}" = "true" ] && warn "VIDEO_PIPELINE_ENABLED is still true on a slim image — set it false in the unit or the bootstrap fails on every boot"
+elif [ "${VIDEO_PIPELINE_ENABLED:-true}" = "true" ]; then
   [ -f "${DATA}/.video-tools-installed" ] && ok "bootstrap sentinel present" || bad "sentinel missing — still installing, or it failed (see logs)"
-  [ -x "${DATA}/venv/bin/python3" ] && ok "venv python present" || bad "venv missing"
+  # bin/python3 survives a failed ensurepip, so its existence proves nothing.
+  if "${DATA}/venv/bin/python3" -c 'import ensurepip' >/dev/null 2>&1; then ok "venv usable"; else bad "venv present but broken (ensurepip missing) — rebuild with RESET_VIDEO_TOOLS=true"; fi
   command -v ffmpeg >/dev/null && ok "ffmpeg — $(ffmpeg -version 2>&1 | head -1 | cut -d' ' -f1-3)" || bad "ffmpeg missing"
   [ -d "${DATA}/playwright-cache" ] && ok "playwright cache — $(du -sh "${DATA}/playwright-cache" 2>/dev/null | cut -f1)" || bad "playwright cache missing"
 else
-  printf '  SKIP  video pipeline disabled by VIDEO_PIPELINE_ENABLED\n'
+  skip "video pipeline disabled by VIDEO_PIPELINE_ENABLED"
+fi
+
+head_ "6. Trust guard and key exposure"
+
+# The entire justification for the nginx container. Both halves are asserted:
+# a hostname must work THROUGH the proxy, and must fail without it. Testing
+# only the success half would leave a regression that removed the header
+# rewriting looking green while every named route in the browser broke.
+if curl -s -o /dev/null --max-time 5 "${PROXY}/api/home" 2>/dev/null; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${PROXY}/api/models-config")
+  [ "$code" = "200" ] && ok "hostname Host+Origin through nginx -> 200 (shim works)" || bad "hostname through nginx -> ${code} (the Host/Origin rewrite is not applied)"
+
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${BASE}/api/models-config")
+  [ "$code" = "403" ] && ok "same headers direct to pi-web -> 403 (shim is load-bearing, not decorative)" || bad "direct to pi-web -> ${code}, expected 403 — the guard changed upstream; re-read nginx.conf's assumptions"
+
+  # Not a failure. Upstream behaviour that packaging cannot fix, restated on
+  # every run so it stays a decision rather than a discovery.
+  if curl -s --max-time 5 -H 'Host: pi.example.com' "${PROXY}/api/models-config" | grep -q '"apiKey":"[^"]'; then
+    warn "/api/models-config returns the provider key in cleartext to an unauthenticated caller through the published port"
+    warn "  -> anyone who can reach :30142 can read the key. Put an authenticating proxy in front, or bind PublishPort to 127.0.0.1."
+  fi
+else
+  skip "nginx not reachable at ${PROXY} — set NGINX_HOST or run this from the pi-agent network"
 fi
 
 head_ "Summary"
-printf '  %d passed, %d failed\n\n' "$PASS" "$FAIL"
+printf '  %d passed, %d failed, %d notes\n\n' "$PASS" "$FAIL" "$NOTE"
 [ "$FAIL" -eq 0 ] || exit 1
