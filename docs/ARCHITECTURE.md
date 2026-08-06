@@ -2,6 +2,8 @@
 
 How the Podman deployment is put together, and why each piece is shaped the way it is. Where a decision differs from [the k3s deployment](https://github.com/WOOWTECH/Woow_k3s_pi_agent_package), the reason is stated rather than left as an unexplained divergence.
 
+This document is the design. [VERIFICATION.md](VERIFICATION.md) is the measurement — what the deployment did when it was run, including the five defects that only appeared under a live workload.
+
 ---
 
 ## 1. Topology
@@ -44,7 +46,7 @@ graph TB
     class PIWEB priv
 ```
 
-**pi-web publishes no host port.** This is the load-bearing decision of the whole layout. `GET /api/models-config` returns the configured provider API key **unredacted and unauthenticated**. Publishing pi-web directly would mean anything that can reach the host on that port can read the key. Keeping it namespace-internal means the only way in is through nginx, which at least gives one place to attach authentication later.
+**pi-web publishes no host port.** This is the load-bearing decision of the whole layout. `GET /api/models-config` returns the configured provider API key **unredacted and unauthenticated** — confirmed on a live deployment, not inferred from source. Publishing pi-web directly would mean anything that can reach the host on that port can read the key. Keeping it namespace-internal means the only way in is through nginx, which at least gives one place to attach authentication later.
 
 **A network, not a pod.** The k3s deployment put everything in one pod because `ttyd` had to share `localhost` with pi-web. With ttyd gone there is nothing to co-locate, and a plain bridge is both simpler and more portable — Podman 4.9 has no `.pod` Quadlet unit type, so a pod would have meant hand-written unit files.
 
@@ -79,6 +81,8 @@ sequenceDiagram
     N-->>B: 200
 ```
 
+Both halves were measured, with identical headers: **200 through nginx, 403 sent directly at pi-web.** The 403 is the more interesting number — it is what proves the shim is load-bearing rather than decorative, and `tests/acceptance.sh` asserts on it for that reason. A regression that quietly removed the header rewriting would still pass a suite that only checked the success path, while every named route in the browser broke.
+
 Nothing else can blank the `Origin` header. A tunnel's `httpHostHeader` option covers `Host` only. That asymmetry is why this container stops being optional the moment any name is put in front of the deployment.
 
 ### Startup-time DNS, and the coupling it forces
@@ -102,12 +106,13 @@ sequenceDiagram
 
     SD->>C: start (TimeoutStartSec=900)
     C->>S: tini → pi-web-start.sh
+    S->>S: umask 077
     S->>V: mkdir sessions/ skills/ home/
-    S->>V: chmod 600 models.json, auth.json
+    S->>V: chmod 600 models.json, auth.json (repair pass)
     S->>S: HOME=/data/pi-agent/home, TZ=Asia/Taipei
     S->>V: symlink $HOME/.pi/agent/skills → /data/pi-agent/skills
     Note right of S: the skills bridge — without it,<br/>`pi install` succeeds and the skill<br/>never appears in a session
-    alt VIDEO_PIPELINE_ENABLED=true and no sentinel
+    alt video toolchain present and enabled
         S-->>V: background: venv + Playwright-Chromium + edge-tts (~720MB)
         Note right of V: does NOT gate startup;<br/>writes .video-tools-installed when done
     end
@@ -119,6 +124,8 @@ sequenceDiagram
 ```
 
 `TimeoutStartSec=900` and `--start-period=120s` exist for the same reason: a cold volume plus the bootstrap can take minutes before `/api/home` answers, and neither systemd nor the healthcheck should give up during that window.
+
+The `umask 077` is first for a reason. It is what makes the credential files private from birth; the chmod that follows only repairs volumes written by an older image. Ordering the other way round — repair first, umask later — is what the original version effectively did, and it left `models.json` at 0644 for the entire period it held an API key.
 
 ---
 
@@ -145,15 +152,15 @@ graph LR
     class MJ,AJ secret
 ```
 
-**Pinning `HOME` into the volume** is what makes the CLI and the web UI agree on state. Left at `/root`, `pi install <skill>` from a shell would write inside the container's ephemeral layer and vanish on the next restart, while the UI kept reading the volume — an especially confusing failure, because the install reports success.
+**Pinning `HOME` into the volume** is what makes the CLI and the web UI agree on state. Left at `/root`, `pi install <skill>` from a shell would write inside the container's ephemeral layer and vanish on the next restart, while the UI kept reading the volume — an especially confusing failure, because the install reports success. The value is baked as image ENV rather than exported from `/etc/profile.d` alone, because profile.d reaches login shells only and `podman exec -it pi-web bash` is not one.
 
 **Allowed cwd roots.** pi-web only accepts a working directory that is either an existing session's cwd or matches `^pi-cwd-\d{8}$` under `$HOME`. A fresh volume has neither, which is why `/api/models` answers `403` before any directory exists — that is normal fresh-install state, not a broken trust guard. The acceptance suite creates the dated directory before probing, precisely so this does not get misread as a failure.
 
 ---
 
-## 5. The two application-level fixes that must not drift
+## 5. The fixes that must not drift
 
-Both are carried identically by the k3s and Podman images. They are properties of the upstream packages, not of the runtime.
+The first two are carried identically by the k3s and Podman images — they are properties of the upstream packages, not of the runtime. The third is specific to this image, and is included here because it is the same class of mistake.
 
 ### The `pi` launcher
 
@@ -167,6 +174,12 @@ Upstream `normalizeToolPath` folds U+00A0, U+2000–200A, U+202F, U+205F and **U
 - two files differing only by space type **cross-read** — you ask for one and get the other's contents.
 
 For a zh-TW deployment this is data loss with a success message. `patches/fix-unicode-space-paths.mjs` handles both upstream shapes and asserts every hunk, so an upstream version bump fails the build instead of quietly dropping the fix. `tests/acceptance.sh` section 4 re-verifies it at runtime, because a patch that applied at build time and a patch that is live in the running image are not the same claim.
+
+### The venv predicate
+
+`video-tools-init.sh` judges an existing virtualenv by `bin/pip`, not by `bin/python3`. A venv whose ensurepip step failed — which is what happens on an image built with `VIDEO_TOOLS=0` — still has `bin/python3`. Testing that file made a half-built venv read as complete: creation was skipped, the next line called a pip that did not exist, the failure path exited 0, the sentinel was never written, and the identical sequence repeated on every boot with no way to recover short of deleting the tree by hand.
+
+The general shape is worth naming, because all three fixes above are instances of it: **the obvious predicate is often not the one that determines whether the next step works.** `bin/python3` exists, `pi` is a declared dependency, a path is "the same path" after normalisation — each is true, and each is the wrong thing to check.
 
 ---
 
@@ -213,18 +226,22 @@ graph LR
 
 `enable-linger` deserves a note: `systemd --user` services stop at logout and do not start at boot without it. This host's container runtime has restarted unprompted before; without lingering the stack would have stayed silently down afterwards.
 
+The per-property acceptance comparison — which of these were actually exercised, and with what result — is in [VERIFICATION.md](VERIFICATION.md#3-k3s--podman-per-property).
+
 ---
 
 ## 7. What is not solved here
 
-Honest boundaries, so nobody assumes coverage that does not exist.
+Honest boundaries, so nobody assumes coverage that does not exist. The last column separates what was observed on a running deployment from what is read from upstream code — both are real, but they are not equally strong claims.
 
-| Gap | Where it lives | Consequence |
-|---|---|---|
-| No authentication | this package | Port 30142 is a shell for anyone who reaches it |
-| `/api/models-config` returns the key unredacted | upstream pi-web | Anything that can reach pi-web can read the provider key |
-| No path confinement | upstream pi-coding-agent | The agent reads and writes anywhere the container user can |
-| No approval gate / no `canUseTool` hook | upstream pi-coding-agent | No opportunity to intercept a tool call before it executes |
-| No native MCP client (0.83.0) | upstream | MCP works only because the agent shells out to `curl` and speaks JSON-RPC by hand |
+| Gap | Where it lives | Consequence | Basis |
+|---|---|---|---|
+| No authentication | this package | Port 30142 is a shell for anyone who reaches it | by construction |
+| `/api/models-config` returns the key unredacted | upstream pi-web | Anything that reaches the published port can read the provider key | **measured** — unauthenticated request, key in cleartext |
+| No path confinement | upstream pi-coding-agent | The agent reads and writes anywhere the container user can | read from upstream |
+| No approval gate / no `canUseTool` hook | upstream pi-coding-agent | No opportunity to intercept a tool call before it executes | read from upstream |
+| No native MCP client (0.83.0) | upstream | MCP works only because the model drives the protocol by hand over `curl` | **measured** — full handshake completed, 38 tools listed |
 
 The first is addressable by putting an authenticating proxy in front — which is exactly why this package deliberately ships no tunnel of its own, leaving that layer to the host's existing Cloudflare Tunnel and Access. The rest are upstream properties and are listed so they are decided about rather than discovered.
+
+The MCP row is worth reading twice. It passed — but it passed because the *model* implemented the protocol correctly on every call, not because the runtime did. That is a capability with a different failure mode: a weaker model does not produce a connection error, it produces a wrong answer.
