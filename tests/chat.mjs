@@ -43,6 +43,13 @@ const decoder = new TextDecoder();
 
 let buf = "", text = "", usage = null, done = false, sawTurnEnd = false, last = Date.now();
 const calls = [], errors = [];
+// Results are correlated by toolCallId, never by arrival order. The agent
+// issues tool calls in parallel, so two starts routinely arrive before either
+// end; pairing a result with the most recently started call attaches it to the
+// wrong arguments, and the transcript then reads exactly like a cross-read bug
+// in the application. That misattribution is indistinguishable from a real
+// defect by eye, which is the whole reason this map exists.
+const byId = new Map();
 
 const pump = (async () => {
   while (true) {
@@ -59,10 +66,15 @@ const pump = (async () => {
         try { e = JSON.parse(line.slice(5).trim()); } catch { continue; }
         const a = e.assistantMessageEvent;
         if (a?.type === "text_delta" && typeof a.delta === "string") text += a.delta;
-        if (e.type === "tool_execution_start") calls.push({ tool: e.toolName, args: e.args });
+        if (e.type === "tool_execution_start") {
+          const c = { id: e.toolCallId, tool: e.toolName, args: e.args };
+          calls.push(c);
+          byId.set(e.toolCallId, c);
+        }
         if (e.type === "tool_execution_end") {
-          const c = calls[calls.length - 1];
+          const c = byId.get(e.toolCallId);
           if (c) { c.isError = !!e.result?.isError; c.result = JSON.stringify(e.result).slice(0, 1500); }
+          else errors.push("UNMATCHED_TOOL_END " + e.toolCallId);
         }
         if (e.type === "message_end" && e.message?.usage) usage = e.message.usage;
         if (e.type === "turn_end") sawTurnEnd = true;
@@ -84,17 +96,23 @@ const quiesce = new Promise((res) => {
 await post(`/api/agent/${id}`, { type: "prompt", message: PROMPT });
 await Promise.race([pump, quiesce, new Promise((r) => setTimeout(r, TIMEOUT))]);
 
+// A call with no result never completed — a timeout, a crash, or a run cut
+// short. Reporting it as an empty result would read as "the tool returned
+// nothing", which is a different and much less alarming claim.
+const pending = calls.filter((c) => c.result === undefined).map((c) => `${c.tool}#${c.id}`);
+
 const result = {
   sessionId: id, model: MODEL, cwd: CWD, durationMs: Date.now() - t0, completed: done,
-  toolCalls: calls.map((c) => ({ tool: c.tool, args: c.args, isError: c.isError, result: (c.result || "").slice(0, 800) })),
-  assistant: text.trim(), usage, errors,
+  toolCalls: calls.map((c) => ({ id: c.id, tool: c.tool, args: c.args, isError: c.isError, result: (c.result || "").slice(0, 800) })),
+  assistant: text.trim(), usage, errors, incomplete: pending,
 };
 if (OUT) writeFileSync(OUT, JSON.stringify(result, null, 1));
 
 console.log(`completed=${done} duration=${result.durationMs}ms toolCalls=${calls.length} tokens=${usage?.totalTokens ?? "?"}`);
+if (pending.length) console.log(`INCOMPLETE (no result event): ${pending.join(", ")}`);
 console.log("--- TOOL CALLS ---");
 calls.forEach((c, i) =>
-  console.log(`${i + 1}. ${c.tool}${c.isError ? " [ERROR]" : ""} ${JSON.stringify(c.args).slice(0, 300)}\n   -> ${(c.result || "").slice(0, 400)}`));
+  console.log(`${i + 1}. ${c.tool}${c.isError ? " [ERROR]" : ""} ${JSON.stringify(c.args).slice(0, 300)}\n   -> ${c.result === undefined ? "(no result event)" : c.result.slice(0, 400)}`));
 console.log("--- ASSISTANT ---");
 console.log(text.trim() || "(none)");
 if (errors.length) { console.log("--- STREAM ERRORS ---"); console.log(errors.join("\n")); }
