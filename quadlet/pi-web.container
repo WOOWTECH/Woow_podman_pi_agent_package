@@ -4,7 +4,8 @@
 # on the shared network, which is what rewrites Host and blanks Origin for
 # pi-web's isApiRequestAllowed() guard. Publishing this container directly
 # would expose an endpoint that answers /api/models-config with the provider
-# API key, unauthenticated.
+# API key, unauthenticated. That is not a theoretical concern: it was confirmed
+# on a live deployment, key in cleartext, no credentials asked for.
 [Unit]
 Description=pi-web — pi coding agent web UI
 Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
@@ -14,7 +15,13 @@ Wants=network-online.target
 [Container]
 ContainerName=pi-web
 Image=ghcr.io/woowtech/woow-podman-pi-agent:latest
-AutoUpdate=registry
+
+# The image is built locally with `podman build --format=docker` and does not
+# exist in any registry. Without Pull=never, Quadlet tries to fetch it on every
+# start and the unit fails on a tag that was never pushed. AutoUpdate=local
+# tracks the local image instead of a registry digest.
+Pull=never
+AutoUpdate=local
 
 Network=pi-agent.network
 Volume=pi-agent-data.volume:/data/pi-agent
@@ -29,7 +36,8 @@ Environment=TZ=Asia/Taipei
 
 # Video pipeline: ffmpeg / Playwright-Chromium / edge-tts / rclone. The first
 # boot on a fresh volume downloads roughly 720MB in the background; the UI
-# serves normally throughout.
+# serves normally throughout. Set false when the image was built with
+# --build-arg VIDEO_TOOLS=0, or the bootstrap runs and fails on every boot.
 Environment=VIDEO_PIPELINE_ENABLED=true
 # One-shot maintenance: set true, restart, wait for the reinstall, set back to
 # false. Left true it re-downloads ~720MB on every restart.
