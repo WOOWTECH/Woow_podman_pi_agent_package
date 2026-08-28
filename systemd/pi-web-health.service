@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh Pi Web Podman health state
+After=pi-web.service
+Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/podman container exists pi-web
+ExecStart=/usr/bin/podman healthcheck run pi-web

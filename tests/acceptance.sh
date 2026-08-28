@@ -7,10 +7,10 @@
 # last and cost tokens. Every check prints PASS/FAIL with the evidence inline,
 # so a failure is actionable without re-running anything.
 #
-# Set PI_ACC_PASS (and PI_ACC_USER, default 'woow') to also run the checks that
-# have to get past Basic auth. The suite cannot read the password itself: the
-# htpasswd is mounted into nginx alone, and mounting it anywhere pi-web could
-# see it would put the hash within reach of the agent's own read tool.
+# Authentication is not part of this repo any more — the same-host reverse
+# proxy in front of pi-web handles it. This suite therefore does not exercise
+# the auth or the through-proxy round trip; those live wherever your downstream
+# proxy config lives (see docs/downstream-nginx.md).
 #
 # Written to be comparable with the k3s deployment: the same properties, in the
 # same order, so a difference between the two is a porting defect rather than a
@@ -19,7 +19,6 @@ set -uo pipefail
 
 DATA="${PI_AGENT_DATA_DIR:-/data/pi-agent}"
 BASE="http://127.0.0.1:${PI_WEB_PORT:-30141}"
-PROXY="http://${NGINX_HOST:-pi-agent-nginx}:30142"
 CWD="${DATA}/home/pi-cwd-$(date +%Y%m%d)"
 PASS=0; FAIL=0; NOTE=0
 
@@ -112,59 +111,36 @@ else
   skip "video pipeline disabled by VIDEO_PIPELINE_ENABLED"
 fi
 
-head_ "6. Authentication, trust guard and key exposure"
+head_ "6. Trust guard and key exposure"
 
-AUTH_USER="${PI_ACC_USER:-woow}"
-AUTH_PASS="${PI_ACC_PASS:-}"
+# The reverse proxy that fronts pi-web is not part of this deployment any
+# more — the same-host nginx / NPM instance handles Host/Origin rewriting
+# and authentication. The suite therefore cannot verify Basic auth, or the
+# full through-proxy round trip; those belong to whatever proxy is in front
+# of :30141 on the host.
+#
+# What is still on us: the guard that made the proxy load-bearing in the
+# first place is still there, and the loopback publish still answers.
 
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${PROXY}/api/home" 2>/dev/null || echo 000)
+# 6a. The upstream guard is still refusing hostnames — the whole reason a
+# rewriting proxy has to exist. A regression here (pi-web relaxing the
+# check, our patches misapplying) would silently let a downstream proxy
+# operator ship a working deployment WITHOUT the Host/Origin rewrite and
+# fail the moment upstream tightens it again.
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${BASE}/api/models-config")
+[ "$code" = "403" ] && ok "hostname direct to pi-web -> 403 (guard is still load-bearing; downstream proxy MUST rewrite Host/Origin)" || bad "hostname direct to pi-web -> ${code}, expected 403 — the guard changed upstream; re-read docs/downstream-nginx.md's assumptions"
 
-if [ "$code" = "000" ]; then
-  skip "nginx not reachable at ${PROXY} — set NGINX_HOST or run this from the pi-agent network"
-else
-  AUTH_ON=0
-  if [ "$code" = "401" ]; then
-    AUTH_ON=1
-    ok "unauthenticated request -> 401 (Basic auth is enforced at the edge)"
-    # A rule that accepts everything and a rule that accepts the right thing
-    # both answer 200 to the correct password. This is the only check that
-    # tells them apart, and the one that catches an htpasswd nginx cannot
-    # parse — which it treats as simply unmatched rather than as an error.
-    wrong=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --user "${AUTH_USER}:not-the-password-$$" "${PROXY}/api/home")
-    [ "$wrong" = "401" ] && ok "wrong password -> 401" || bad "wrong password -> ${wrong}, expected 401 — the credential check is not doing anything"
-  else
-    warn "unauthenticated request -> ${code}: there is NO password in front of the UI"
-    warn "  -> anyone who can reach :30142 gets a coding agent with a shell. Fix: scripts/set-password.sh"
-  fi
+# 6b. Loopback path (what a same-host proxy uses) still works with the
+# rewritten headers. This is what the downstream proxy contract produces.
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "${BASE}/api/models-config")
+[ "$code" = "200" ] && ok "loopback Host with blank Origin -> 200 (the shape the downstream proxy must send)" || bad "loopback Host with blank Origin -> ${code}, expected 200"
 
-  if [ "$AUTH_ON" = "1" ] && [ -z "${AUTH_PASS}" ]; then
-    skip "set PI_ACC_PASS to run the authenticated proxy checks (trust guard, key exposure)"
-  else
-    CURL_AUTH=""
-    [ -n "${AUTH_PASS}" ] && CURL_AUTH="--user ${AUTH_USER}:${AUTH_PASS}"
-
-    # The reason the nginx container exists at all: a hostname must work
-    # THROUGH the proxy, because pi-web rejects it directly.
-    # shellcheck disable=SC2086
-    code=$(curl -s -o /dev/null -w '%{http_code}' ${CURL_AUTH} -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${PROXY}/api/models-config")
-    [ "$code" = "200" ] && ok "hostname Host+Origin through nginx -> 200 (shim works)" || bad "hostname through nginx -> ${code} (the Host/Origin rewrite is not applied, or the password is wrong)"
-
-    # shellcheck disable=SC2086
-    if curl -s --max-time 5 ${CURL_AUTH} -H 'Host: pi.example.com' "${PROXY}/api/models-config" | grep -q '"apiKey":"[^"]'; then
-      if [ "$AUTH_ON" = "1" ]; then
-        warn "/api/models-config returns the provider key in cleartext to any authenticated caller, and to anything on the container network"
-      else
-        warn "/api/models-config returns the provider key in cleartext to an UNAUTHENTICATED caller through the published port"
-      fi
-    fi
-  fi
-
-  # Needs no credentials, and is the half that proves the shim is load-bearing
-  # rather than decorative. Without it, a regression that removed the header
-  # rewriting would leave this suite green while every named route in the
-  # browser broke.
-  code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pi.example.com' -H 'Origin: https://pi.example.com' "${BASE}/api/models-config")
-  [ "$code" = "403" ] && ok "same headers direct to pi-web -> 403 (shim is load-bearing, not decorative)" || bad "direct to pi-web -> ${code}, expected 403 — the guard changed upstream; re-read nginx.conf's assumptions"
+# 6c. /api/models-config still leaks the provider key to any caller that
+# gets past the guard. This is upstream behaviour, unchanged and not fixed
+# by removing the sidecar; it is why the downstream proxy MUST require
+# authentication, not just do Host/Origin rewriting.
+if curl -s --max-time 5 -H 'Host: localhost' "${BASE}/api/models-config" | grep -q '"apiKey":"[^"]'; then
+  warn "/api/models-config returns the provider key in cleartext to anyone that reaches :${PI_WEB_PORT:-30141} — downstream proxy MUST enforce authentication, not just rewrite headers"
 fi
 
 head_ "Summary"

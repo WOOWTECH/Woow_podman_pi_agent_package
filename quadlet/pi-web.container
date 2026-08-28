@@ -1,20 +1,38 @@
 # pi-web — the agent and its web UI.
 #
-# Deliberately publishes NO host port. The only way in is the nginx container
-# on the shared network, which is what rewrites Host and blanks Origin for
-# pi-web's isApiRequestAllowed() guard. Publishing this container directly
-# would expose an endpoint that answers /api/models-config with the provider
-# API key, unauthenticated. That is not a theoretical concern: it was confirmed
-# on a live deployment, key in cleartext, no credentials asked for.
+# Publishes 127.0.0.1:30141 so a reverse proxy running on the same host (the
+# shared nginx / Nginx Proxy Manager already present on this deployment) can
+# reach it. Nothing on the LAN can reach it directly — the loopback binding
+# is the point.
+#
+# The downstream proxy MUST rewrite two headers before forwarding:
+#
+#     proxy_set_header Host localhost;
+#     proxy_set_header Origin "";
+#
+# pi-web's isApiRequestAllowed() rejects any Host that is not a loopback
+# name or a raw IP, and any Origin that does not match. A hostname in front
+# (Cloudflare Tunnel, internal DNS name, reverse proxy virtual host) fails
+# both halves and every auth-gated route answers 403 "Untrusted API
+# request". The symptom is distinctive: the UI renders and then does
+# nothing. See docs/downstream-nginx.md for the sample proxy config.
+#
+# Authentication is not shipped here either — the same downstream proxy
+# handles it (HTTP Basic, CF Access, whatever the proxy supports). Anything
+# that reaches the loopback port (this host's user account, other containers
+# sharing the host if given access) gets an unauthenticated coding agent
+# that also answers /api/models-config with the provider API key in
+# cleartext.
 [Unit]
 Description=pi-web — pi coding agent web UI
 Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
-After=network-online.target
+After=network-online.target podman.socket
 Wants=network-online.target
+Requires=podman.socket
 
 [Container]
 ContainerName=pi-web
-Image=ghcr.io/woowtech/woow-podman-pi-agent:latest
+Image=localhost/woow-podman-pi-agent-host:latest
 
 # The image is built locally with `podman build --format=docker` and does not
 # exist in any registry. Without Pull=never, Quadlet tries to fetch it on every
@@ -24,15 +42,29 @@ Pull=never
 AutoUpdate=local
 
 Network=pi-agent.network
-Volume=pi-agent-data.volume:/data/pi-agent
 
-# Bound on all interfaces INSIDE the container network namespace so the nginx
-# container can reach it by name. Nothing on the host can: no PublishPort.
+# Loopback-only publish. The reverse proxy is expected to be same-host and
+# reach this via 127.0.0.1:30141. Never widen to 0.0.0.0 — the endpoint is
+# unauthenticated and returns the provider key on /api/models-config.
+PublishPort=127.0.0.1:30141:30141
+
+Volume=pi-agent-data.volume:/data/pi-agent
+Volume=/home/woowtechopenclaw:/host/home/woowtechopenclaw:rw
+Volume=/run/user/1000/podman/podman.sock:/run/host/podman/podman.sock:rw
+Volume=/run/user/1000/bus:/run/host/user-bus:rw
+
+# Bound on all interfaces INSIDE the container network namespace. PublishPort
+# above narrows that to host loopback only.
 Environment=PI_WEB_HOSTNAME=0.0.0.0
 Environment=PI_WEB_PORT=30141
 Environment=PI_AGENT_DATA_DIR=/data/pi-agent
 Environment=LOG_LEVEL=info
 Environment=TZ=Asia/Taipei
+Environment=PATH=/data/pi-agent/home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CONTAINER_HOST=unix:///run/host/podman/podman.sock
+Environment=DOCKER_HOST=unix:///run/host/podman/podman.sock
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/host/user-bus
+Environment=HOST_HOME=/host/home/woowtechopenclaw
 
 # Video pipeline: ffmpeg / Playwright-Chromium / edge-tts / rclone. The first
 # boot on a fresh volume downloads roughly 720MB in the background; the UI

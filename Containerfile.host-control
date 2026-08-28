@@ -1,0 +1,12 @@
+# OpenClaw host profile: add only the clients needed to control the owning
+# rootless Podman user. This does not add sudo or host root authority.
+FROM ghcr.io/woowtech/woow-podman-pi-agent:latest
+
+USER root
+RUN apt-get -o APT::Sandbox::User=root update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      podman systemd \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+LABEL org.opencontainers.image.description="Woow Pi Agent with host Podman and user-systemd clients"

@@ -1,5 +1,16 @@
 # Acceptance record
 
+> **Note (2026-08-29).** This record predates the removal of the nginx
+> sidecar from this repo. Every measurement citing port `:30142`, the
+> `pi-agent-nginx` container, or Basic auth managed by `set-password.sh`
+> reflects the pre-refactor layout. The current deployment publishes
+> `127.0.0.1:30141` and delegates auth + header rewriting to a same-host
+> reverse proxy; see [downstream-nginx.md](downstream-nginx.md) and
+> [plans/2026-08-29-remove-nginx-sidecar.md](plans/2026-08-29-remove-nginx-sidecar.md).
+> The upstream defects it lists (unredacted API key, no path confinement,
+> no approval gate) are unchanged — moving the credential boundary out of
+> this repo does not fix them.
+
 **English** · [繁體中文](VERIFICATION_zh-TW.md)
 
 What this deployment actually did, on 2026-08-06, on a rootless Podman host. Numbers are from the run, not from the design. Anything not measured is marked as such.

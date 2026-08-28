@@ -8,19 +8,22 @@ This document is the design. [VERIFICATION.md](VERIFICATION.md) is the measureme
 
 ## 1. Topology
 
-Two containers on a private bridge. Exactly one host port is published, and it is not the agent's.
+One container on a private bridge, published to host loopback only. The
+reverse proxy and the credential store live outside this repo — on the
+shared same-host nginx / Nginx Proxy Manager that the deployment already
+runs for its other services.
 
 ```mermaid
 graph TB
-    subgraph LAN["LAN"]
-        BROWSER["Browser<br/>http://host:30142"]
+    subgraph LAN["LAN / Internet"]
+        BROWSER["Browser"]
         TUNNEL["Cloudflare Tunnel<br/><i>(separate container,<br/>not shipped here)</i>"]
     end
 
     subgraph HOST["Podman host — rootless, uid 1000"]
+        PROXY["<b>same-host reverse proxy</b><br/>nginx / NPM<br/><i>(not shipped here)</i><br/>terminates TLS, enforces auth,<br/>rewrites Host + Origin"]
         subgraph NET["pi-agent network (netavark + aardvark-dns)"]
-            NGINX["<b>pi-agent-nginx</b><br/>nginx:1.27-alpine<br/>listen 30142"]
-            PIWEB["<b>pi-web</b><br/>woow-podman-pi-agent<br/>listen 30141<br/><i>no published port</i>"]
+            PIWEB["<b>pi-web</b><br/>woow-podman-pi-agent<br/>listen 30141<br/><b>PublishPort 127.0.0.1:30141</b>"]
         end
         VOL[("pi-agent-data<br/>named volume")]
         SD["systemd --user<br/>(Quadlet-generated units)"]
@@ -31,65 +34,105 @@ graph TB
         MCP["MCP servers over HTTP"]
     end
 
-    BROWSER -->|":30142"| NGINX
-    TUNNEL -.->|"optional"| NGINX
-    NGINX -->|"proxy_pass http://pi-web:30141<br/><b>Host: localhost</b><br/><b>Origin: (blank)</b>"| PIWEB
+    BROWSER -->|"https://pi.example.com"| PROXY
+    TUNNEL -.->|"optional"| PROXY
+    PROXY -->|"proxy_pass http://127.0.0.1:30141<br/><b>Host: localhost</b><br/><b>Origin: (blank)</b><br/><b>auth_basic on</b>"| PIWEB
     PIWEB --- VOL
     PIWEB -->|"HTTPS"| OR
     PIWEB -->|"agent shells out: curl + JSON-RPC"| MCP
-    SD -.->|"supervises, restarts"| NGINX
     SD -.->|"supervises, restarts"| PIWEB
 
     classDef pub fill:#fde68a,stroke:#b45309,color:#000
     classDef priv fill:#bfdbfe,stroke:#1d4ed8,color:#000
-    class NGINX pub
+    classDef ext fill:#e5e7eb,stroke:#6b7280,color:#000,stroke-dasharray:4
+    class PROXY pub
     class PIWEB priv
 ```
 
-**pi-web publishes no host port.** This is the load-bearing decision of the whole layout. `GET /api/models-config` returns the configured provider API key **unredacted and unauthenticated** — confirmed on a live deployment, not inferred from source. Publishing pi-web directly would mean anything that can reach the host on that port can read the key. Keeping it namespace-internal means the only way in is through nginx, which at least gives one place to attach authentication later.
+**pi-web publishes to loopback only.** `GET /api/models-config` returns
+the configured provider API key **unredacted and unauthenticated** —
+confirmed on a live deployment, not inferred. Widening `PublishPort` to
+`0.0.0.0` puts a scrape target on the LAN. The only intended reachability
+is via a proxy that lives on the same host, uses `127.0.0.1:30141`, and
+has both Host/Origin rewriting and authentication in place. See
+[docs/downstream-nginx.md](downstream-nginx.md) for that contract.
 
-**A network, not a pod.** The k3s deployment put everything in one pod because `ttyd` had to share `localhost` with pi-web. With ttyd gone there is nothing to co-locate, and a plain bridge is both simpler and more portable — Podman 4.9 has no `.pod` Quadlet unit type, so a pod would have meant hand-written unit files.
+**Why the proxy is not in this repo.** An earlier revision shipped an nginx
+sidecar with its own Basic auth (`scripts/set-password.sh`). That worked
+in isolation but produced two credential stores — one here, one on the
+shared reverse proxy the host already runs for every other service — and
+two places to keep secure. Removing the sidecar leaves the deployment with
+a single credential boundary, on the proxy the operator already maintains.
+The trade-off is that a fresh deployment now has a mandatory external
+configuration step; [docs/plans/2026-08-29-remove-nginx-sidecar.md](plans/2026-08-29-remove-nginx-sidecar.md) records the reasoning in full.
+
+**A network, not a pod.** The k3s deployment put everything in one pod
+because `ttyd` had to share `localhost` with pi-web. With ttyd gone
+there is nothing to co-locate, and a plain bridge is simpler and more
+portable — Podman 4.9 has no `.pod` Quadlet unit type, so a pod would
+have meant hand-written unit files.
 
 ---
 
-## 2. The trust guard — why nginx exists at all
-
-nginx is not here for TLS, load balancing, or caching. It exists to rewrite two headers.
+## 2. The trust guard — why a reverse proxy is mandatory
 
 pi-web's `isApiRequestAllowed()` rejects:
 - any `Host` that is not a loopback **name** or a **raw IP**, and
 - any `Origin` that does not match the request.
 
-Reaching the UI by raw LAN IP happens to satisfy the `Host` half on its own. But the moment a **hostname** is involved — a Cloudflare Tunnel, a reverse proxy, an internal DNS name — both halves fail, and every auth-gated route answers `403 Untrusted API request`. The symptom is distinctive and easy to misdiagnose: **the UI loads and renders, and then does nothing.**
+Reaching the UI by raw LAN IP happens to satisfy the `Host` half on its
+own. But the moment a **hostname** is involved — a Cloudflare Tunnel, a
+reverse proxy, an internal DNS name — both halves fail, and every
+auth-gated route answers `403 Untrusted API request`. The symptom is
+distinctive and easy to misdiagnose: **the UI loads and renders, and then
+does nothing.**
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant B as Browser
-    participant N as nginx :30142
+    participant N as same-host proxy<br/>(nginx / NPM)
     participant P as pi-web :30141
 
-    Note over B,P: Without the shim — hostname in front
+    Note over B,P: Without the header rewrite — hostname in front
     B->>P: GET /api/models<br/>Host: pi.example.com<br/>Origin: https://pi.example.com
     P-->>B: 403 Untrusted API request
     Note right of P: UI renders, every data route fails
 
-    Note over B,P: With the shim
+    Note over B,P: With the header rewrite (downstream proxy's job)
     B->>N: GET /api/models<br/>Host: pi.example.com<br/>Origin: https://pi.example.com
     N->>P: GET /api/models<br/>Host: localhost<br/>Origin: (empty)
     P-->>N: 200 { models: [...] }
     N-->>B: 200
 ```
 
-Both halves were measured, with identical headers: **200 through nginx, 403 sent directly at pi-web.** The 403 is the more interesting number — it is what proves the shim is load-bearing rather than decorative, and `tests/acceptance.sh` asserts on it for that reason. A regression that quietly removed the header rewriting would still pass a suite that only checked the success path, while every named route in the browser broke.
+Both halves were measured, with identical headers: **200 through a
+rewriting proxy, 403 sent directly at pi-web.** The 403 is the more
+interesting number — it is what proves the rewrite is load-bearing rather
+than decorative, and `tests/acceptance.sh` still asserts on it for that
+reason even though the proxy itself is no longer part of this repo. A
+regression that quietly relaxed the upstream check would let a downstream
+proxy operator ship a working deployment without the rewrites and break
+the moment upstream tightens the check again.
 
-Nothing else can blank the `Origin` header. A tunnel's `httpHostHeader` option covers `Host` only. That asymmetry is why this container stops being optional the moment any name is put in front of the deployment.
+Nothing else can blank the `Origin` header. A tunnel's `httpHostHeader`
+option covers `Host` only. That asymmetry is why the header rewrite is
+non-negotiable, no matter which reverse proxy is used.
 
-### Startup-time DNS, and the coupling it forces
+### Why the proxy is not shipped here
 
-`nginx.conf` uses a static `proxy_pass http://pi-web:30141` with **no `resolver` directive**. Podman's DNS does not live at Docker's `127.0.0.11`, and hardcoding any address breaks the moment the network is recreated. So nginx resolves the name once, at startup, through the container's own `resolv.conf`.
+An earlier version of this repo bundled an nginx sidecar (`nginx.container`
++ `config/nginx.conf` + `scripts/set-password.sh`) that did exactly this
+rewrite plus HTTP Basic auth. It was removed because every host that runs
+this deployment already runs a same-host reverse proxy for its other
+services, and duplicating that layer created two credential stores that
+had to be kept in step.
 
-The cost is a stale address if pi-web is ever replaced. The fix is in the unit, not the config: `nginx.container` declares `Requires=pi-web.service` and `PartOf=pi-web.service`, so systemd restarts nginx whenever pi-web restarts and the address is re-read. nginx starts in well under a second, so the coupling is free.
+The header rewrite is trivial to reproduce elsewhere; the maintenance cost
+of a second nginx + a second password file was not. [docs/downstream-nginx.md](downstream-nginx.md)
+is the contract that downstream must satisfy, with a plain-nginx sample
+and an NPM sample; [docs/plans/2026-08-29-remove-nginx-sidecar.md](plans/2026-08-29-remove-nginx-sidecar.md)
+records the reasoning and the migration path in full.
 
 ---
 
@@ -120,7 +163,6 @@ sequenceDiagram
     W-->>C: listening on 0.0.0.0:30141
     C->>C: HEALTHCHECK /api/home (start-period 120s)
     C-->>SD: healthy
-    SD->>SD: nginx.service starts (Requires=)
 ```
 
 `TimeoutStartSec=900` and `--start-period=120s` exist for the same reason: a cold volume plus the bootstrap can take minutes before `/api/home` answers, and neither systemd nor the healthcheck should give up during that window.
@@ -199,17 +241,17 @@ graph LR
 
     subgraph POD["Podman"]
         QD["Quadlet units"] --> Q1[".container pi-web"]
-        QD --> Q2[".container nginx"]
         QD --> Q3[".network"]
         QD --> Q4[".volume"]
         Q1 --> PV[("pi-agent-data")]
+        Q1 -.->|"127.0.0.1:30141"| PROXY["host's shared<br/>nginx / NPM<br/>(out of scope)"]
     end
 
     C1 ==>|"same image content"| Q1
-    C2 ==>|"same header shim"| Q2
+    C2 ==>|"header shim moved to<br/>host's shared reverse proxy"| PROXY
     C3 ==>|"replaced by<br/>podman exec"| SHELL["podman exec -it pi-web bash"]
     PVC ==> PV
-    NP ==>|"replaced by<br/>not publishing the port"| Q1
+    NP ==>|"replaced by<br/>loopback-only publish"| Q1
     CFD ==>|"host's existing<br/>tunnel container"| EXT["(out of scope)"]
 ```
 
@@ -217,7 +259,7 @@ graph LR
 |---|---|---|
 | Orchestration | Helm → Deployment | Quadlet → `systemd --user` |
 | Shell access | ttyd sidecar on a published port | `podman exec` |
-| Ingress restriction | `NetworkPolicy` limited to 30141/30142/7681 | pi-web simply publishes nothing |
+| Ingress restriction | `NetworkPolicy` limited to 30141/30142/7681 | pi-web publishes `127.0.0.1:30141` only; downstream proxy is host-local |
 | Health | startup + readiness + liveness probes | one `HEALTHCHECK`, surfaced in `podman ps` |
 | Storage | PVC (`local-path`) | named volume |
 | Privilege | real root on the node | rootless; container root → host uid 1000 |
@@ -236,12 +278,12 @@ Honest boundaries, so nobody assumes coverage that does not exist. The last colu
 
 | Gap | Where it lives | Consequence | Basis |
 |---|---|---|---|
-| No authentication | this package | Port 30142 is a shell for anyone who reaches it | by construction |
-| `/api/models-config` returns the key unredacted | upstream pi-web | Anything that reaches the published port can read the provider key | **measured** — unauthenticated request, key in cleartext |
+| No authentication in this repo | delegated to the downstream reverse proxy | If the proxy does not enforce auth, `127.0.0.1:30141` is a shell for anyone who reaches it | by construction — see [docs/downstream-nginx.md](downstream-nginx.md) |
+| `/api/models-config` returns the key unredacted | upstream pi-web | Anything that reaches `127.0.0.1:30141` can read the provider key. The downstream proxy is what stops LAN callers from doing so. | **measured** — unauthenticated request, key in cleartext |
 | No path confinement | upstream pi-coding-agent | The agent reads and writes anywhere the container user can | read from upstream |
 | No approval gate / no `canUseTool` hook | upstream pi-coding-agent | No opportunity to intercept a tool call before it executes | read from upstream |
 | No native MCP client (0.83.0) | upstream | MCP works only because the model drives the protocol by hand over `curl` | **measured** — full handshake completed, 38 tools listed |
 
-The first is addressable by putting an authenticating proxy in front — which is exactly why this package deliberately ships no tunnel of its own, leaving that layer to the host's existing Cloudflare Tunnel and Access. The rest are upstream properties and are listed so they are decided about rather than discovered.
+The first is addressed by the downstream reverse proxy contract in [docs/downstream-nginx.md](downstream-nginx.md) — one instance of it is the host's existing Cloudflare Tunnel and Access. The rest are upstream properties and are listed so they are decided about rather than discovered.
 
 The MCP row is worth reading twice. It passed — but it passed because the *model* implemented the protocol correctly on every call, not because the runtime did. That is a capability with a different failure mode: a weaker model does not produce a connection error, it produces a wrong answer.
