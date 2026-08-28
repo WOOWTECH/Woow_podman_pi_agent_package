@@ -138,6 +138,60 @@ to this Proxy Host. NPM stores the hashed credentials for you; the pi-agent
 package no longer has a `set-password.sh` because that responsibility has
 moved here.
 
+**NPM Custom Location pitfall — read this before you fight the 403.** NPM's
+generated `location /` block emits `proxy_set_header Host $host` *after*
+your Custom Location's Advanced Config, so an override placed via the
+Advanced tab or a Custom Location gets silently shadowed by NPM's own Host
+directive. Every `/api/*` route then answers `403 "Untrusted API request"`
+while `/` still serves the static UI.
+
+The workaround is a per-host `server_proxy.conf` that defines a
+longer-prefix location for the API paths with its own `proxy_pass` (nginx
+routes by longest prefix, so this beats NPM's `location /` for anything
+starting with `/api/`). Drop this file at
+`<npm-data>/nginx/custom/server_proxy.conf` and reload nginx:
+
+```nginx
+# Podman's aardvark-dns lives at the network gateway. valid=10s makes nginx
+# re-resolve pi-web at request time so a pi-web restart (new container IP)
+# does not require restarting NPM.
+resolver 10.89.9.1 10.89.6.1 valid=10s;
+set $pi_web_upstream http://pi-web:30141;
+
+location /api/ {
+    auth_basic            "Authorization required";
+    auth_basic_user_file  /data/access/1;   # NPM writes this
+    satisfy all;
+
+    proxy_set_header Host localhost;
+    proxy_set_header Origin "";
+
+    proxy_set_header X-Real-IP        $remote_addr;
+    proxy_set_header X-Forwarded-For  $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection $http_connection;
+
+    proxy_read_timeout    3600s;
+    proxy_send_timeout    3600s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    client_max_body_size 100M;
+
+    proxy_pass $pi_web_upstream;
+}
+```
+
+Prerequisites for the container-to-container path:
+- `podman network connect pi-agent npm-app` so the NPM container can
+  resolve `pi-web` on the pi-agent network.
+- Do NOT set `proxy_http_version 1.1` in the Proxy Host's `advanced_config`
+  — NPM's template already emits it, and a duplicate makes nginx refuse to
+  reload (the DB row keeps the last-known `nginx_err` for debugging).
+
+
 ---
 
 ## What still leaks despite this proxy
