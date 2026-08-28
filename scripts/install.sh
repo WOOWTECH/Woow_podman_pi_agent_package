@@ -10,6 +10,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
+USER_UNIT_DIR="${HOME}/.config/systemd/user"
 CONFIG_DIR="${HOME}/.config/pi-agent"
 WANT_AUTH=1
 
@@ -70,16 +71,26 @@ else
   "${REPO_DIR}/scripts/set-password.sh" --disable
 fi
 
-say "Installing Quadlet units to ${QUADLET_DIR}"
-mkdir -p "${QUADLET_DIR}"
+say "Installing OpenClaw host-profile units"
+mkdir -p "${QUADLET_DIR}" "${USER_UNIT_DIR}"
 for unit in pi-agent.network pi-agent-data.volume pi-web.container nginx.container; do
   install -m 0644 "${REPO_DIR}/quadlet/${unit}" "${QUADLET_DIR}/${unit}"
+  cmp -s "${REPO_DIR}/quadlet/${unit}" "${QUADLET_DIR}/${unit}" \
+    || die "installed Quadlet differs from selected source: ${unit}"
+  printf '    %s\n' "${unit}"
+done
+for unit in pi-web-health.service pi-web-health.timer; do
+  install -m 0644 "${REPO_DIR}/systemd/${unit}" "${USER_UNIT_DIR}/${unit}"
+  cmp -s "${REPO_DIR}/systemd/${unit}" "${USER_UNIT_DIR}/${unit}" \
+    || die "installed user unit differs from selected source: ${unit}"
   printf '    %s\n' "${unit}"
 done
 
 say "Reloading systemd and starting"
 systemctl --user daemon-reload
+systemctl --user enable --now podman.socket
 systemctl --user start pi-web.service
+systemctl --user enable --now pi-web-health.timer
 
 say "Waiting for pi-web to become healthy"
 for i in $(seq 1 60); do
@@ -98,12 +109,13 @@ cat <<EOF
 
 $(say "Done")
 
-  Web UI     http://${IP:-<host-ip>}:30142
+  Web UI     http://127.0.0.1:30142 (host loopback only)
   Logs       journalctl --user -u pi-web -f
              podman logs -f pi-web
   Shell      podman exec -it pi-web bash
   Stop       systemctl --user stop nginx pi-web
   Status     podman ps --format '{{.Names}}\t{{.Status}}'
+             systemctl --user status pi-web-health.timer
   Password   ./scripts/set-password.sh          (change)
              ./scripts/set-password.sh --disable (remove)
 

@@ -36,9 +36,11 @@ AutoUpdate=registry
 
 Network=pi-agent.network
 
-# LAN-reachable by decision, behind Basic auth. Change to
-# 127.0.0.1:30142:30142 to make it local-only.
-PublishPort=0.0.0.0:30142:30142
+# OpenClaw host profile: loopback only. Reach it through an authenticated
+# reverse proxy or an explicit SSH tunnel; never publish the agent to the LAN.
+PublishPort=127.0.0.1:30142:30142
+
+NoNewPrivileges=true
 
 Volume=%h/.config/pi-agent/nginx.conf:/etc/nginx/nginx.conf:ro
 # Both are always present, even when authentication is disabled — nginx treats

@@ -9,12 +9,13 @@
 [Unit]
 Description=pi-web — pi coding agent web UI
 Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
-After=network-online.target
+After=network-online.target podman.socket
 Wants=network-online.target
+Requires=podman.socket
 
 [Container]
 ContainerName=pi-web
-Image=ghcr.io/woowtech/woow-podman-pi-agent:latest
+Image=localhost/woow-podman-pi-agent-host:latest
 
 # The image is built locally with `podman build --format=docker` and does not
 # exist in any registry. Without Pull=never, Quadlet tries to fetch it on every
@@ -25,6 +26,9 @@ AutoUpdate=local
 
 Network=pi-agent.network
 Volume=pi-agent-data.volume:/data/pi-agent
+Volume=/home/woowtechopenclaw:/host/home/woowtechopenclaw:rw
+Volume=/run/user/1000/podman/podman.sock:/run/host/podman/podman.sock:rw
+Volume=/run/user/1000/bus:/run/host/user-bus:rw
 
 # Bound on all interfaces INSIDE the container network namespace so the nginx
 # container can reach it by name. Nothing on the host can: no PublishPort.
@@ -33,6 +37,11 @@ Environment=PI_WEB_PORT=30141
 Environment=PI_AGENT_DATA_DIR=/data/pi-agent
 Environment=LOG_LEVEL=info
 Environment=TZ=Asia/Taipei
+Environment=PATH=/data/pi-agent/home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CONTAINER_HOST=unix:///run/host/podman/podman.sock
+Environment=DOCKER_HOST=unix:///run/host/podman/podman.sock
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/host/user-bus
+Environment=HOST_HOME=/host/home/woowtechopenclaw
 
 # Video pipeline: ffmpeg / Playwright-Chromium / edge-tts / rclone. The first
 # boot on a fresh volume downloads roughly 720MB in the background; the UI

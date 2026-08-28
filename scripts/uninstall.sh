@@ -8,17 +8,20 @@
 set -euo pipefail
 
 QUADLET_DIR="${HOME}/.config/containers/systemd"
+USER_UNIT_DIR="${HOME}/.config/systemd/user"
 PURGE="${1:-}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
 say "Stopping services"
+systemctl --user disable --now pi-web-health.timer 2>/dev/null || true
 systemctl --user stop nginx.service pi-web.service 2>/dev/null || true
 
 say "Removing Quadlet units"
 for unit in nginx.container pi-web.container pi-agent-data.volume pi-agent.network; do
   rm -f "${QUADLET_DIR}/${unit}"
 done
+rm -f "${USER_UNIT_DIR}/pi-web-health.service" "${USER_UNIT_DIR}/pi-web-health.timer"
 systemctl --user daemon-reload
 
 if [ "${PURGE}" = "--purge" ]; then

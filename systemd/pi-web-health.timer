@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Pi Web health check every 30 seconds
+Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
+
+[Timer]
+OnActiveSec=150s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=pi-web-health.service
+
+[Install]
+WantedBy=timers.target
