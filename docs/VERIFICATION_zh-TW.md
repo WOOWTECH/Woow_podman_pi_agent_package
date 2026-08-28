@@ -1,5 +1,14 @@
 # 驗收紀錄
 
+> **註（2026-08-29）** 這份紀錄早於本 repo 拿掉 nginx sidecar 的重構。
+> 所有提到 `:30142`、`pi-agent-nginx` 容器、或 `set-password.sh` 管理
+> 的 Basic auth 的量測，都對應到重構前的拓樸。目前部署只發佈 `127.0.0.1:30141`，
+> 驗證與 header 轉寫都交給同機 reverse proxy——見
+> [downstream-nginx.md](downstream-nginx.md) 與
+> [plans/2026-08-29-remove-nginx-sidecar.md](plans/2026-08-29-remove-nginx-sidecar.md)。
+> 這份紀錄裡列出的上游缺陷（API 金鑰未遮罩、無路徑限制、無核可關卡）沒變——
+> 把憑證邊界移出本 repo 並沒有修好它們。
+
 [English](VERIFICATION.md) · **繁體中文**
 
 這套部署實際做到了什麼。時間 2026-08-06，rootless Podman 主機。下面的數字來自實測，不是來自設計文件；沒量到的都有註明。
