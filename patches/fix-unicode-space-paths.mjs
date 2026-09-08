@@ -44,7 +44,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 
-const MARK = "PATCHED (Woow k3s image)";
+const MARK = "PATCHED (Woow pi-agent image)";
 
 /** Shape A — @earendil-works/pi-agent-core/dist/harness/tools/path-utils.js */
 const SHAPE_A = {
