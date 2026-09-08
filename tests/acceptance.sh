@@ -87,14 +87,48 @@ head_ "4. CJK path handling (the U+3000 trap)"
 # Upstream folds U+3000 to an ASCII space on every read/write/edit, which makes
 # a write land at the wrong name and makes two files differing only by space
 # type cross-read. The image patches this; verify the patch is live.
-T="${CWD}/_acc_cjk"; rm -rf "$T"; mkdir -p "$T"
-printf 'IDEOGRAPHIC\n' > "$T/台灣　報告.txt"   # U+3000 between the words
-printf 'ASCII\n'       > "$T/台灣 報告.txt"    # U+0020
-got=$(cat "$T/台灣　報告.txt" 2>/dev/null)
-[ "$got" = "IDEOGRAPHIC" ] && ok "U+3000 filename reads its own content" || bad "U+3000 filename returned '${got}' (cross-read — patch not applied)"
-n=$(find "$T" -type f | wc -l)
-[ "$n" = "2" ] && ok "both space variants coexist as distinct files" || bad "expected 2 files, found ${n}"
-rm -rf "$T"
+#
+# NOT TESTED WITH THE SHELL. An earlier version wrote two files with printf and
+# read one back with cat — pure shell, which folds nothing, so it passed on a
+# plain debian container with no pi-web installed at all. The fold happens
+# inside pi-coding-agent's path-utils, so that is what has to be exercised.
+PU=$(find /usr/local/lib/node_modules /usr/lib/node_modules \
+       -path '*pi-coding-agent/dist/core/tools/path-utils.js' -print -quit 2>/dev/null)
+if [ -z "${PU}" ]; then
+  bad "could not locate pi-coding-agent path-utils.js — cannot verify the CJK patch"
+else
+  probe=$(node --input-type=module -e "
+    import { resolveToCwd } from '${PU}';
+    const IDEO = '\u3000';
+    const given = 'a' + IDEO + 'b.txt';
+    const resolved = resolveToCwd(given, '/tmp');
+    console.log(resolved.endsWith(given) ? 'EXACT' : 'FOLDED:' + resolved);
+  " 2>&1) || probe="ERROR:${probe}"
+  case "${probe}" in
+    EXACT)    ok "resolveToCwd preserves U+3000 — writes land where asked" ;;
+    FOLDED:*) bad "resolveToCwd folded U+3000 (${probe}) — the patch is NOT live in this image" ;;
+    *)        bad "could not exercise resolveToCwd: ${probe}" ;;
+  esac
+
+  # The fold must survive as a READ-ONLY fallback: a real ASCII-space file is
+  # still found when asked for with U+3000.
+  T="${CWD}/_acc_cjk"; rm -rf "$T"; mkdir -p "$T"
+  printf 'ASCII\n' > "$T/fallback probe.txt"
+  fb=$(node --input-type=module -e "
+    import { resolveReadPath } from '${PU}';
+    console.log(resolveReadPath('${T}/fallback\u3000probe.txt', '${T}'));
+  " 2>/dev/null)
+  case "${fb}" in
+    *"fallback probe.txt") ok "read still falls back to the folded form when the exact path misses" ;;
+    *) bad "read fallback did not resolve to the ASCII-space file (got: ${fb:-<none>})" ;;
+  esac
+
+  printf 'IDEOGRAPHIC\n' > "$T/台灣　報告.txt"
+  printf 'ASCII\n'       > "$T/台灣 報告.txt"
+  n=$(find "$T" -name '台灣*報告.txt' -type f | wc -l)
+  [ "$n" = "2" ] && ok "both space variants coexist as distinct files" || bad "expected 2 files, found ${n}"
+  rm -rf "$T"
+fi
 
 head_ "5. Video pipeline"
 
@@ -141,6 +175,72 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "${BASE}/api/
 # authentication, not just do Host/Origin rewriting.
 if curl -s --max-time 5 -H 'Host: localhost' "${BASE}/api/models-config" | grep -q '"apiKey":"[^"]'; then
   warn "/api/models-config returns the provider key in cleartext to anyone that reaches :${PI_WEB_PORT:-30141} — downstream proxy MUST enforce authentication, not just rewrite headers"
+fi
+
+head_ "7. Browser terminal (pi-web 0.9.0)"
+
+# 0.9.0 added /api/terminal, which spawns a real PTY through node-pty. node-pty
+# is a native addon with no linux prebuild, so it is compiled in the image's
+# builder stage. A broken compile is invisible from the UI — the pane renders,
+# attaches, and never produces a prompt — so it is asserted here. Tested on the
+# loopback publish, the same path the same-host reverse proxy uses.
+PTY_MOD=/usr/local/lib/node_modules/@agegr/pi-web/node_modules/node-pty
+if ! node -e 'require(process.argv[1])' "${PTY_MOD}" >/dev/null 2>&1; then
+  bad "node-pty does not load — the browser terminal is dead (rebuild; see the builder stage in Containerfile)"
+else
+  ok "node-pty loads"
+
+  # The terminal only accepts a cwd inside an allowed project root.
+  TCWD="${DATA}/home/pi-cwd-$(date +%Y%m%d)"; mkdir -p "${TCWD}"
+  tid=$(curl -s -X POST "${BASE}/api/terminal" -H 'Host: localhost' -H 'Content-Type: application/json' \
+          -d "{\"cwd\":\"${TCWD}\",\"cols\":100,\"rows\":30}" \
+        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).id||""))}catch(e){}})')
+
+  if [ -z "${tid}" ]; then
+    bad "POST /api/terminal returned no id — ${TCWD} outside allowed roots, or node-pty failed to spawn"
+  else
+    ok "terminal session created"
+    sse=$(mktemp)
+    curl -sN --max-time 8 -H 'Host: localhost' "${BASE}/api/terminal/${tid}/events" > "${sse}" 2>/dev/null &
+    sse_pid=$!
+    sleep 2
+    # $0 is expanded by the SPAWNED shell — one assertion covers both that the
+    # PTY round-trips and that SHELL=/bin/bash from the image ENV reached it.
+    # Without that ENV upstream falls back to dash and the terminal silently
+    # loses history, completion and arrays.
+    curl -s -o /dev/null -X POST "${BASE}/api/terminal/${tid}" -H 'Host: localhost' \
+      -H 'Content-Type: application/json' -d '{"type":"input","data":"echo ACC-TERM-$0\r"}'
+    sleep 4
+    kill "${sse_pid}" 2>/dev/null; wait "${sse_pid}" 2>/dev/null
+
+    term_out=$(node -e '
+      const raw = require("fs").readFileSync(process.argv[1], "utf8");
+      let out = "";
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.startsWith("data:")) continue;
+        const p = line.slice(5).trim(); if (!p) continue;
+        try { const j = JSON.parse(p); out += (typeof j === "string" ? j : (j.data ?? "")); }
+        catch { out += p; }
+      }
+      process.stdout.write(out.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\r/g, ""));
+    ' "${sse}")
+    rm -f "${sse}"
+
+    if echo "${term_out}" | grep -q 'ACC-TERM-/bin/bash'; then
+      ok "PTY round-trips and the login shell is bash"
+    elif echo "${term_out}" | grep -q 'ACC-TERM-'; then
+      bad "PTY works but the shell is not bash — $(echo "${term_out}" | grep -o 'ACC-TERM-[^ ]*' | head -1) (SHELL unset in the image ENV)"
+    else
+      bad "no output came back over the SSE stream (node-pty spawned but produced nothing)"
+    fi
+  fi
+
+  # Not a failure — a property of the deployment restated every run. Since 0.9.0
+  # reaching :30141 means POST /api/terminal, i.e. a root shell, not merely the
+  # provider key. On this topology the loopback publish is the boundary and the
+  # downstream proxy MUST authenticate — Host/Origin rewriting alone is not
+  # enough now.
+  warn "POST /api/terminal on :${PI_WEB_PORT:-30141} is a root shell — the downstream proxy MUST require auth, not only rewrite Host/Origin (see docs/downstream-nginx.md)"
 fi
 
 head_ "Summary"
