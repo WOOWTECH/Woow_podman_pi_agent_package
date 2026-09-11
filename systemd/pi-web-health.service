@@ -5,5 +5,8 @@ Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
 
 [Service]
 Type=oneshot
-ExecCondition=/usr/bin/podman container exists pi-web
-ExecStart=/usr/bin/podman healthcheck run pi-web
+# Bare "podman": systemd resolves it on its fixed search path, where
+# /usr/local/bin comes before /usr/bin. Hosts running podman-static
+# (docs/armbian-arm64-deployment.md) then get the same binary as Quadlet.
+ExecCondition=podman container exists pi-web
+ExecStart=podman healthcheck run pi-web

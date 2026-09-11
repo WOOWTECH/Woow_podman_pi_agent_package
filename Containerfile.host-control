@@ -1,6 +1,15 @@
-# OpenClaw host profile: add only the clients needed to control the owning
-# rootless Podman user. This does not add sudo or host root authority.
-FROM ghcr.io/woowtech/woow-podman-pi-agent:latest
+# Host-control profile: add only the clients needed to drive the owning rootless
+# Podman user (podman + systemctl over the mounted socket and user bus). This adds
+# no sudo and no host root.
+#
+# scripts/install.sh builds ./Containerfile first as
+# localhost/woow-podman-pi-agent:<tag> and then this file on top of it with
+# --build-arg BASE_IMAGE=<that tag>. A fresh host needs no registry image: the
+# base has never been published to GHCR (publishing is future work).
+#
+# BUILD WITH --format=docker, like the base: see the note in ./Containerfile.
+ARG BASE_IMAGE=localhost/woow-podman-pi-agent:0.9.0-r1
+FROM ${BASE_IMAGE}
 
 USER root
 RUN apt-get -o APT::Sandbox::User=root update \

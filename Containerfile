@@ -5,7 +5,14 @@
 # rejects them. Podman honours a Docker-format HEALTHCHECK natively and reports
 # it in `podman ps`, which is the whole reason it is here:
 #
-#   podman build --format=docker -t ghcr.io/woowtech/woow-podman-pi-agent:latest -f Containerfile .
+# scripts/install.sh runs that build for you and tags the result
+# localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
+# then builds Containerfile.host-control on top of it:
+#
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.9.0-r1 -f Containerfile .
+#
+# Never tag a local build with a ghcr.io/... name: the base is not published, and
+# a registry-looking local tag hides that from every fresh host.
 #
 # This is NOT the k3s image with Kubernetes bits removed. It is built for a
 # different runtime and the differences are deliberate:
