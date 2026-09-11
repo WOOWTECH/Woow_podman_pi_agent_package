@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# `check && ok || bad` is safe here: ok() only prints and counts, it cannot fail.
+# The one single-quoted $0 is sent to the terminal API on purpose, unexpanded.
+# shellcheck disable=SC2015,SC2016
 # Acceptance suite for the Podman deployment.
 #
 #   podman exec -it pi-web bash /opt/tests/acceptance.sh
