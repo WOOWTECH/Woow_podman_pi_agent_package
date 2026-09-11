@@ -8,6 +8,11 @@
 > [plans/2026-08-29-remove-nginx-sidecar.md](plans/2026-08-29-remove-nginx-sidecar.md)。
 > 這份紀錄裡列出的上游缺陷（API 金鑰未遮罩、無路徑限制、無核可關卡）沒變——
 > 把憑證邊界移出本 repo 並沒有修好它們。
+>
+> **註（2026-09-12）** 版本也是歷史狀態：這次量測用的是 pi-web 0.8.4，映像是手動建置、
+> tag 為 `ghcr.io/…:latest`。目前的套件釘選 pi-web 0.9.0（新增瀏覽器終端機，見 README 的
+> 安全性章節），並由 `scripts/install.sh` 建置 `localhost/woow-podman-pi-agent-host:<tag>`。
+> 實機的安裝後檢查是 `tests/smoke.sh`；應用層的驗收仍是 `tests/acceptance.sh`。
 
 [English](VERIFICATION.md) · **繁體中文**
 

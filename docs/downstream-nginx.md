@@ -40,6 +40,12 @@ variables. `GET /api/models-config` returns the configured provider API key
 in cleartext to any caller that gets past the Host/Origin guard, confirmed on
 a live deployment (not inferred from source).
 
+Since pi-web 0.9.0 the stakes are higher than the key: `/api/terminal` is a
+browser terminal, a login shell that runs as root inside the container, which
+rootless Podman maps to the host account running pi-web. With the host-control
+profile that account's home directory, Podman socket and user systemd are all
+reachable from that shell.
+
 The downstream proxy is therefore the deployment's only credential boundary.
 Whatever mechanism the proxy supports — HTTP Basic, CF Access, mTLS, an
 OIDC gate — must be **on**, and must apply to every path, not just `/`.
@@ -107,90 +113,68 @@ chown root:nginx /etc/nginx/pi-agent.htpasswd && chmod 640 /etc/nginx/pi-agent.h
 
 ---
 
-## Sample setup (Nginx Proxy Manager)
+## Sample setup (Nginx Proxy Manager, the pi-web front)
 
-Details Tab
-- Domain names: `pi.example.com`
-- Scheme: `http`
-- Forward hostname / IP: `127.0.0.1`
-- Forward port: `30141`
-- Enable Websockets Support: **on**
-- Block Common Exploits: on (optional)
+[Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm) ships
+the NPM side of this contract. On the same host, as the same account:
 
-Advanced Tab — paste this verbatim into the *Custom Nginx Configuration*
-field (NPM does not surface `proxy_set_header` directly):
-
-```nginx
-proxy_set_header Host localhost;
-proxy_set_header Origin "";
-proxy_http_version 1.1;
-proxy_read_timeout 3600s;
-proxy_send_timeout 3600s;
-proxy_buffering off;
-proxy_request_buffering off;
-client_max_body_size 100M;
+```bash
+cd Woow_podman_nginxpm
+./scripts/install.sh --with-pi-web-front      # records NPM_PI_WEB_FRONT=true in ~/.config/npm/npm.env
 ```
 
-SSL Tab — enable Force SSL and HTTP/2, use a Let's Encrypt cert.
+That makes NPM join the `pi-agent` network (ordering on
+`pi-agent-network.service`, never a hard dependency) and mounts two files from
+`~/.config/npm/pi-web-front/`:
 
-Access List — create an *Access List* with Basic Auth entries and attach it
-to this Proxy Host. NPM stores the hashed credentials for you; the pi-agent
-package no longer has a `set-password.sh` because that responsibility has
-moved here.
+- `proxy.conf` replaces NPM's `conf.d/include/proxy.conf`, which every proxy
+  host includes inside its `location /`. It is the stock 2.15.1 file with the
+  Host and Origin lines taken from two maps;
+- `maps.conf` defines those maps, keyed on `$server` (the proxy host's Forward
+  Hostname): for `pi-web` they give `Host: localhost` and a blank `Origin`,
+  for every other upstream the stock `$host` and the client's own Origin.
 
-**NPM Custom Location pitfall — read this before you fight the 403.** NPM's
-generated `location /` block emits `proxy_set_header Host $host` *after*
-your Custom Location's Advanced Config, so an override placed via the
-Advanced tab or a Custom Location gets silently shadowed by NPM's own Host
-directive. Every `/api/*` route then answers `403 "Untrusted API request"`
-while `/` still serves the static UI.
+Then create the proxy host in the NPM admin UI:
 
-The workaround is a per-host `server_proxy.conf` that defines a
-longer-prefix location for the API paths with its own `proxy_pass` (nginx
-routes by longest prefix, so this beats NPM's `location /` for anything
-starting with `/api/`). Drop this file at
-`<npm-data>/nginx/custom/server_proxy.conf` and reload nginx:
+- Details: domain `pi.example.com`, scheme `http`, **Forward Hostname `pi-web`**,
+  Forward Port `30141`, Websockets Support **on**. The hostname must be the
+  container name: the rewrite is keyed on it, and NPM reaches pi-web over the
+  shared network, not over the host's loopback (a rootless bridge cannot reach
+  `127.0.0.1` of the host).
+- Access List: an access list with Basic auth entries, attached to this proxy
+  host. NPM stores the hashed credentials.
+- SSL: enable Force SSL and HTTP/2 when NPM terminates TLS. Behind a
+  Cloudflare tunnel TLS already ends at Cloudflare.
+- Advanced: optionally raise the SSE timeouts:
 
-```nginx
-# Podman's aardvark-dns lives at the network gateway. valid=10s makes nginx
-# re-resolve pi-web at request time so a pi-web restart (new container IP)
-# does not require restarting NPM.
-resolver 10.89.9.1 10.89.6.1 valid=10s;
-set $pi_web_upstream http://pi-web:30141;
+  ```nginx
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
+  proxy_buffering off;
+  proxy_request_buffering off;
+  client_max_body_size 100M;
+  ```
 
-location /api/ {
-    auth_basic            "Authorization required";
-    auth_basic_user_file  /data/access/1;   # NPM writes this
-    satisfy all;
+  Do **not** set `proxy_set_header Host`, `Origin` or `proxy_http_version`
+  there: NPM emits its own `proxy_set_header Host $host` inside `location /`,
+  nginx does not inherit server-level `proxy_set_header` into a location that
+  sets any, so an Advanced-tab override is silently shadowed and every `/api/*`
+  route answers `403 "Untrusted API request"`. That is the reason the rewrite
+  lives in the global `proxy.conf` instead.
 
-    proxy_set_header Host localhost;
-    proxy_set_header Origin "";
+Symptoms and fixes:
 
-    proxy_set_header X-Real-IP        $remote_addr;
-    proxy_set_header X-Forwarded-For  $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+| Symptom | Cause |
+|---|---|
+| UI loads, every `/api/*` answers 403 | Forward Hostname is not `pi-web` (for example `127.0.0.1`), so the maps give the stock Host |
+| 502 from NPM | NPM is not on the `pi-agent` network (front not enabled), or pi-web is down |
+| NPM fails to start after someone "hardened" the mounts to `:ro` | NPM 2.15.1 runs `chown -R` over `/etc/nginx/conf.d` at start; the mounts must stay read-write |
 
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade    $http_upgrade;
-    proxy_set_header Connection $http_connection;
-
-    proxy_read_timeout    3600s;
-    proxy_send_timeout    3600s;
-    proxy_buffering off;
-    proxy_request_buffering off;
-    client_max_body_size 100M;
-
-    proxy_pass $pi_web_upstream;
-}
-```
-
-Prerequisites for the container-to-container path:
-- `podman network connect pi-agent npm-app` so the NPM container can
-  resolve `pi-web` on the pi-agent network.
-- Do NOT set `proxy_http_version 1.1` in the Proxy Host's `advanced_config`
-  — NPM's template already emits it, and a duplicate makes nginx refuse to
-  reload (the DB row keeps the last-known `nginx_err` for debugging).
-
+Earlier revisions of this document described a per-host `server_proxy.conf`
+with hardcoded aardvark resolver IPs and a manual `podman network connect
+pi-agent npm-app`. Both are obsolete: NPM generates its resolvers from
+`/etc/resolv.conf` (aardvark-dns, `valid=10s`, so a pi-web restart needs no NPM
+restart), and the network membership is part of the NPM unit.
 
 ---
 
@@ -203,8 +187,15 @@ Even with Host/Origin rewritten and Basic auth on:
   runs as its owner. This is upstream pi-web behaviour; the proxy cannot fix
   it.
 - Anything else on the Podman host that can reach `127.0.0.1:30141`
-  bypasses the proxy entirely. Rootless namespacing helps, but do not put
+  bypasses the proxy entirely: a tailnet `tailscale serve` forward to that
+  port, an `ssh -L` shared with others, another container that can reach the
+  host's loopback. Since pi-web 0.9.0 each of those is an unauthenticated
+  browser terminal, i.e. a shell as the account running pi-web with its home
+  directory mounted read-write. Rootless namespacing helps, but do not put
   untrusted containers on the same host expecting network isolation.
+- A public hostname protected by NPM Basic auth alone has one password between
+  the Internet and that shell. Put Cloudflare Access (or another identity-aware
+  gate) in front of it as a second, independent layer.
 - Basic auth over plain HTTP sends the password base64-encoded on every
   request. Terminate TLS at this proxy; do not skip that step because "it
   is only on the LAN".
