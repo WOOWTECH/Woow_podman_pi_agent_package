@@ -23,7 +23,7 @@ while (($#)); do
   case $1 in
     --yes) yes=1 ;;
     --no-safety-backup) safety=0 ;;
-    -h | --help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
     -*) ql_die "unknown option $1 (see --help)" ;;
     *) [[ -z $archive ]] || ql_die "one archive only"; archive=$1 ;;
   esac

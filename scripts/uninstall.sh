@@ -28,7 +28,7 @@ while (($#)); do
     --purge) purge=1 ;;
     --yes) yes=1 ;;
     --dry-run) export QL_DRY_RUN=1 ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,14p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift

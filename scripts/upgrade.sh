@@ -35,7 +35,7 @@ while (($#)); do
   case $1 in
     --no-backup) backup=0 ;;
     --prune) prune=1 ;;
-    -h | --help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift

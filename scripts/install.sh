@@ -66,8 +66,10 @@ trap 'rm -rf "$WORK"' EXIT
 render_units() {
   rm -rf "$WORK/src" "$WORK/out"
   mkdir -p "$WORK/src" "$WORK/out"
+  # Glob, not a list of names: tests/dryrun.sh renders systemd/* the same way, so a helper
+  # unit added later is installed as well as verified instead of only verified.
   cp -p "$REPO"/quadlet/*.container "$REPO"/quadlet/*.network "$REPO"/quadlet/*.volume \
-    "$REPO"/systemd/pi-web-health.service "$REPO"/systemd/pi-web-health.timer "$WORK/src/"
+    "$REPO"/systemd/* "$WORK/src/"
   ql_env_load "$1"
   RENDER_ARGS=()
   render_args "$1"
