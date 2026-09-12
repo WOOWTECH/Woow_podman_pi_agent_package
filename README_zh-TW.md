@@ -173,11 +173,13 @@ scripts/
   backup.sh restore.sh     pi-agent-data 匯出 / 匯入
   uninstall.sh             移除，除非 --purge 否則保留 volume
   render-args.sh           由 env 檔計算出的值（與 tests/dryrun.sh 共用）
+  common.sh                接手舊版 install.sh 留下的 helper unit
   lib/quadlet-lib.sh       vendored 的 WOOWTECH Quadlet 函式庫（不要修改；CI 會檢查雜湊）
 tests/
   dryrun.sh                渲染 + quadlet -dryrun + systemd-analyze verify（CI）
   dryrun.local.sh          檢查產生出來的 podman 指令是否符合 pi-agent 的不變條件（CI）
   host-profile.sh          host-control profile 的靜態檢查（CI）
+  adopt-legacy.sh          在仍留有舊 unit 的主機上安裝（CI）
   smoke.sh                 真實主機上的安裝後檢查
   acceptance.sh chat.mjs   不需 LLM 的驗收測試與對話測試工具
 docs/                      架構、下游 proxy 契約、Armbian 筆記、歷史紀錄
