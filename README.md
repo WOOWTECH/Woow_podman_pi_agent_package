@@ -229,11 +229,13 @@ scripts/
   backup.sh restore.sh     pi-agent-data export / import
   uninstall.sh             removal, volume kept unless --purge
   render-args.sh           values computed from the env file (shared with tests/dryrun.sh)
+  common.sh                adoption of the helper units an earlier install.sh left behind
   lib/quadlet-lib.sh       vendored WOOWTECH Quadlet library (do not edit; CI checks its hash)
 tests/
   dryrun.sh                render + quadlet -dryrun + systemd-analyze verify (CI)
   dryrun.local.sh          pi-agent invariants on the generated podman command (CI)
   host-profile.sh          static checks on the host-control profile (CI)
+  adopt-legacy.sh          install on a host that still has the pre-manifest units (CI)
   smoke.sh                 post-install checks on a real host
   acceptance.sh chat.mjs   the no-LLM acceptance suite and the conversation harness
 docs/                      architecture, downstream proxy contract, Armbian notes, history

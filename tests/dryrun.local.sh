@@ -59,3 +59,8 @@ echo "invariants: $_pi_ok passed"
 
 echo "== tests/host-profile.sh"
 if bash "$REPO/tests/host-profile.sh"; then echo "ok   host-profile"; else echo "FAIL host-profile"; failures=$((failures + 1)); fi
+
+# Step 5 + step 6 of scripts/install.sh against a host that still carries the pre-quadlet-lib
+# pi-web-health.{service,timer}: the case that made every --dry-run there fail.
+echo "== tests/adopt-legacy.sh"
+if bash "$REPO/tests/adopt-legacy.sh"; then echo "ok   adopt-legacy"; else echo "FAIL adopt-legacy"; failures=$((failures + 1)); fi
