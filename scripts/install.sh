@@ -26,6 +26,8 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/scripts/lib/quadlet-lib.sh"
 # shellcheck source=render-args.sh
 . "$REPO/scripts/render-args.sh"
+# shellcheck source=common.sh
+. "$REPO/scripts/common.sh"
 
 # ---- settings ------------------------------------------------------------------------------
 APP=pi-agent
@@ -161,21 +163,10 @@ fi
 # ---- 5. adopt helper units installed by the pre-Quadlet-lib install.sh ---------------------
 # Earlier versions of this script copied pi-web-health.{service,timer} straight into
 # ~/.config/systemd/user. They are ours (same Documentation= URL) but not in the lib's
-# manifest, which would refuse them as foreign. Move them aside (backup kept) so
-# ql_install_files can take over.
-manifest=$HOME/.local/state/woow-quadlet/$APP/manifest
-adopt_dir=$HOME/.local/state/woow-quadlet/$APP/adopted/$(date +%Y%m%d-%H%M%S)
-for u in pi-web-health.service pi-web-health.timer; do
-  p=$HOME/.config/systemd/user/$u
-  [[ -f $p && ! -L $p ]] || continue
-  if [[ -f $manifest ]] && grep -qF "  $p" "$manifest"; then continue; fi
-  cmp -s "$p" "$WORK/out/$u" && continue # identical: the lib adopts it as is
-  grep -qxF "$DOC_URL" "$p" || ql_die "$p exists and was not installed by this package; move it away first"
-  if dry; then ql_info "[dry-run] would adopt $p (moved to $adopt_dir/)"; continue; fi
-  mkdir -p "$adopt_dir"
-  mv -- "$p" "$adopt_dir/$u"
-  ql_info "adopted the earlier install's $u (old copy: $adopt_dir/$u)"
-done
+# manifest, which would refuse them as foreign. pi_adopt_legacy_units moves them aside
+# (backup kept) so ql_install_files below can take over; in a dry run it records the move
+# instead of doing it, so step 6 reports the write the real run would do.
+pi_adopt_legacy_units "$APP" "$WORK/out" "$DOC_URL" pi-web-health.service pi-web-health.timer
 
 # ---- 6. install changed files, then start / restart only what changed ------------------------
 ql_enable_podman_socket
