@@ -197,11 +197,16 @@ ql_wait_http "http://127.0.0.1:$PORT/api/home" '200' 120 || ql_die "http://127.0
 bash "$REPO/tests/smoke.sh" || ql_die "tests/smoke.sh failed"
 
 # ---- 8. exposure report (read-only) --------------------------------------------------------
-if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -E ":$PORT\$" | grep -vqE "^127\.0\.0\.1:$PORT\$"; then
+# Read the listener list once: `... | grep -vq` exits at the first non-loopback listener, the
+# producer is then killed by SIGPIPE and pipefail makes that the pipeline's status -- which
+# would swallow the very warning this block exists to print.
+port_listeners=$(ss -tlnH 2>/dev/null | awk '{print $4}' | grep -E ":$PORT\$" || true)
+if [[ -n $port_listeners ]] && grep -vqE "^127\.0\.0\.1:$PORT\$" <<<"$port_listeners"; then
   ql_warn "port $PORT listens on a non-loopback address: that is an unauthenticated root-equivalent shell"
 fi
 if podman container exists woow-tailscale >/dev/null 2>&1; then
-  if podman exec woow-tailscale tailscale serve status --json 2>/dev/null | grep -qE "127\.0\.0\.1:$PORT\b"; then
+  ts_serve=$(podman exec woow-tailscale tailscale serve status --json 2>/dev/null || true)
+  if grep -qE "127\.0\.0\.1:$PORT\b" <<<"$ts_serve"; then
     ql_warn "the woow-tailscale serve config forwards a tailnet port to 127.0.0.1:$PORT."
     ql_warn "Every tailnet member reaches pi-web WITHOUT the proxy's authentication. Remove it, e.g.:"
     printf '    podman exec woow-tailscale tailscale serve --tcp=%s off\n' "$PORT" >&2
