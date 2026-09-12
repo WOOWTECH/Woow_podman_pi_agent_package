@@ -108,7 +108,9 @@ Error: container <id> and volume <name> share lock ID 0: deadlock due to lock mi
 **The old database keeps coming back.** Anything that still calls the 4.3.x
 binary recreates `bolt_state.db`, and Podman 6 then refuses to run at all.
 Audit every periodic caller before migrating. In this repo,
-`systemd/pi-web-health.service` invokes `/usr/bin/podman` every 30 seconds; any
+`systemd/pi-web-health.service` invokes a bare `podman` every 30 seconds, which
+systemd resolves on its own search path (`/usr/local/bin` first, so a
+podman-static install wins); any
 site-local supervisor script is likely to as well. Point them at the new binary
 or stop them for the duration.
 

@@ -87,8 +87,15 @@ That is the whole install. `scripts/install.sh`:
    runs `tests/smoke.sh`.
 
 Every image is built before any unit is touched, so a failed build never
-causes downtime. `./scripts/install.sh --build-only` builds the images and
-stops, which is the way to prepare ahead of a maintenance window.
+causes downtime.
+
+| Flag | Effect |
+|---|---|
+| `--build-only` | build both images and stop — no config, no units, nothing restarted. The way to prepare ahead of a maintenance window |
+| `--rebuild` | build both images again even though the pinned tag exists |
+| `--no-build` | never build; the pinned images must already be there (what `upgrade.sh` uses) |
+| `--no-start` | install the units and `daemon-reload`, but start or restart nothing |
+| `--dry-run` | render, validate and report what would change; touch nothing |
 
 The tag is `<pi-web version>-r<package revision>` (today `0.9.0-r1`) and is
 pinned in `quadlet/pi-web.container`; `Pull=never`, because the images exist
@@ -181,9 +188,10 @@ the old `:latest` image is still there.
 
 1. Put a reverse proxy **with authentication** in front of pi-web. On a host
    running [Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm),
-   set `NPM_PI_WEB_FRONT=true` there, then create a proxy host with Forward
-   Hostname `pi-web`, port `30141` and an access list. Plain nginx: see
-   [docs/downstream-nginx.md](docs/downstream-nginx.md).
+   install it with `./scripts/install.sh --with-pi-web-front` (which is what
+   records `NPM_PI_WEB_FRONT=true` in `~/.config/npm/npm.env`), then create a
+   proxy host with Forward Hostname `pi-web`, port `30141` and an access list.
+   Plain nginx: see [docs/downstream-nginx.md](docs/downstream-nginx.md).
 2. Open the UI at whatever hostname the proxy serves.
 3. Go to **Models**, add your provider (OpenRouter, Anthropic, OpenAI …) and
    paste the API key. The key is written to `models.json` on the volume

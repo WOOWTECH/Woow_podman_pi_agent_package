@@ -179,7 +179,7 @@ sequenceDiagram
     S->>S: umask 077
     S->>V: mkdir sessions/ skills/ home/
     S->>V: chmod 600 models.json, auth.json (repair pass)
-    S->>S: HOME=/data/pi-agent/home, TZ=Asia/Taipei
+    S->>S: HOME=/data/pi-agent/home, TZ=$PI_TZ
     S->>V: symlink $HOME/.pi/agent/skills → /data/pi-agent/skills
     Note right of S: the skills bridge — without it,<br/>`pi install` succeeds and the skill<br/>never appears in a session
     alt video toolchain present and enabled

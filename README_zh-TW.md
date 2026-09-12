@@ -65,7 +65,15 @@ cd Woow_podman_pi_agent_package
 5. 把 `pi-agent.network`、`pi-agent-data.volume`、`pi-web.container` 裝進 `~/.config/containers/systemd/`，健康檢查 unit 裝進 `~/.config/systemd/user/`，只寫有變動的檔案；
 6. 啟動新增的 unit，**pi-web 的 unit 或映像有變時才重啟 pi-web**（沒變的重跑什麼都不重啟），等到 `healthy`，再跑 `tests/smoke.sh`。
 
-所有映像都在動到任何 unit 之前建好，所以建置失敗不會造成停機。`./scripts/install.sh --build-only` 只建映像就結束，適合在維護時段之前先準備。
+所有映像都在動到任何 unit 之前建好，所以建置失敗不會造成停機。
+
+| 參數 | 作用 |
+|---|---|
+| `--build-only` | 只建兩個映像就結束 — 不碰設定與 unit，也不重啟任何東西。適合在維護時段之前先準備 |
+| `--rebuild` | 即使釘選的 tag 已存在也重新建置兩個映像 |
+| `--no-build` | 不建置；釘選的映像必須已經存在（`upgrade.sh` 走這條） |
+| `--no-start` | 安裝 unit 並 `daemon-reload`，但不啟動也不重啟 |
+| `--dry-run` | 只計算、驗證並報告會變更什麼，不動任何東西 |
 
 Tag 是 `<pi-web 版本>-r<套件修訂號>`（目前是 `0.9.0-r1`），釘在 `quadlet/pi-web.container`；`Pull=never`，因為映像只存在於建置它的那台主機。Base 映像沒有發佈到任何 registry；發佈到 GHCR（讓主機可以跳過 base 建置）是之後的工作。
 
@@ -133,7 +141,7 @@ cd Woow_podman_pi_agent_package && git pull
 
 ## 首次使用
 
-1. 在 pi-web 前面放一台**有開驗證**的 reverse proxy。主機上跑 [Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm) 的話，在那邊設 `NPM_PI_WEB_FRONT=true`，然後建一個 proxy host：Forward Hostname `pi-web`、port `30141`、掛上 access list。一般 nginx 請看 [docs/downstream-nginx.md](docs/downstream-nginx.md)。
+1. 在 pi-web 前面放一台**有開驗證**的 reverse proxy。主機上跑 [Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm) 的話，用 `./scripts/install.sh --with-pi-web-front` 安裝它（這個參數就是把 `NPM_PI_WEB_FRONT=true` 寫進 `~/.config/npm/npm.env` 的東西），然後建一個 proxy host：Forward Hostname `pi-web`、port `30141`、掛上 access list。一般 nginx 請看 [docs/downstream-nginx.md](docs/downstream-nginx.md)。
 2. 用 proxy 對外的 hostname 開 UI。
 3. 進 **Models** 頁，新增供應商並貼 API key。金鑰以 `600` 權限寫入 volume 上的 `models.json`。
 4. 開始對話。Agent 的工作目錄必須是*允許的根目錄*：既有 session 的 cwd，或 `$HOME/pi-cwd-YYYYMMDD`。
