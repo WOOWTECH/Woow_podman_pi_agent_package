@@ -62,7 +62,7 @@ export QL_APP=$APP
 dry() { [[ ${QL_DRY_RUN:-0} == 1 ]]; }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/$APP-install.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+ql_cleanup work rm -rf "$WORK"
 
 # render_units <envfile>: stage + render quadlet/ and systemd/ into $WORK/out; sets IMAGE
 render_units() {
