@@ -36,7 +36,7 @@ graph TB
 
     BROWSER -->|"https://pi.example.com"| PROXY
     TUNNEL -.->|"optional"| PROXY
-    PROXY -->|"proxy_pass http://127.0.0.1:30141<br/><b>Host: localhost</b><br/><b>Origin: (blank)</b><br/><b>auth_basic on</b>"| PIWEB
+    PROXY -->|"NPM: http://pi-web:30141 on the pi-agent network<br/>host nginx: http://127.0.0.1:30141<br/><b>Host: localhost</b><br/><b>Origin: (blank)</b><br/><b>auth on</b>"| PIWEB
     PIWEB --- VOL
     PIWEB -->|"HTTPS"| OR
     PIWEB -->|"agent shells out: curl + JSON-RPC"| MCP
@@ -53,8 +53,12 @@ graph TB
 the configured provider API key **unredacted and unauthenticated** —
 confirmed on a live deployment, not inferred. Widening `PublishPort` to
 `0.0.0.0` puts a scrape target on the LAN. The only intended reachability
-is via a proxy that lives on the same host, uses `127.0.0.1:30141`, and
-has both Host/Origin rewriting and authentication in place. See
+is via a proxy that lives on the same host and has both Host/Origin
+rewriting and authentication in place. A proxy running on the host itself
+uses `127.0.0.1:30141`; a containerised one such as Nginx Proxy Manager joins
+the `pi-agent` network and uses `pi-web:30141`, because a rootless bridge
+cannot reach the host's loopback ([Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm)
+does this with `NPM_PI_WEB_FRONT=true`). See
 [docs/downstream-nginx.md](downstream-nginx.md) for that contract.
 
 **Why the proxy is not in this repo.** An earlier revision shipped an nginx
@@ -136,7 +140,30 @@ records the reasoning and the migration path in full.
 
 ---
 
-## 3. Boot sequence
+## 3. Install and boot sequence
+
+`scripts/install.sh` does everything up to the first start, in an order chosen
+so that nothing it can fail at costs downtime:
+
+1. **Render.** `quadlet/*` and `systemd/*` carry `@@TOKENS@@` for the per-host
+   values in `~/.config/pi-agent/pi-agent.env` (whitelist: `quadlet/render-vars`).
+   Account-specific paths are systemd specifiers, `%h` and `%t`, which systemd
+   expands when it loads the generated unit, so the rendered file is the same on
+   every host with the same settings.
+2. **Check.** The rendered set goes through the Quadlet generator
+   (`quadlet -dryrun -user`) and `systemd-analyze --user verify`, the same checks
+   CI runs in `tests/dryrun.sh`.
+3. **Build.** `Containerfile` becomes `localhost/woow-podman-pi-agent:<tag>`,
+   then `Containerfile.host-control` is built on top of it
+   (`--build-arg BASE_IMAGE=`) as `localhost/woow-podman-pi-agent-host:<tag>`.
+   Both with `--format=docker`. The unit pins that tag with `Pull=never`.
+4. **Install and apply.** Only changed files are written. pi-web restarts when
+   its unit, the network or volume unit, or the image behind the tag changed;
+   the health timer is started first.
+5. **Verify.** Health (with an active `podman healthcheck run`), `/api/home`,
+   then `tests/smoke.sh`.
+
+The boot sequence of the container itself:
 
 ```mermaid
 sequenceDiagram
@@ -152,7 +179,7 @@ sequenceDiagram
     S->>S: umask 077
     S->>V: mkdir sessions/ skills/ home/
     S->>V: chmod 600 models.json, auth.json (repair pass)
-    S->>S: HOME=/data/pi-agent/home, TZ=Asia/Taipei
+    S->>S: HOME=/data/pi-agent/home, TZ=$PI_TZ
     S->>V: symlink $HOME/.pi/agent/skills → /data/pi-agent/skills
     Note right of S: the skills bridge — without it,<br/>`pi install` succeeds and the skill<br/>never appears in a session
     alt video toolchain present and enabled

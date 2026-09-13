@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# `check && ok || bad` is safe here: ok() only prints and counts, it cannot fail.
+# The one single-quoted $0 is sent to the terminal API on purpose, unexpanded.
+# shellcheck disable=SC2015,SC2016
 # Acceptance suite for the Podman deployment.
 #
 #   podman exec -it pi-web bash /opt/tests/acceptance.sh
@@ -75,7 +78,11 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/models?cwd=${CWD}")
 code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/skills?cwd=${CWD}"); [ "$code" = "200" ] && ok "/api/skills -> 200" || bad "/api/skills -> ${code}"
 code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/plugins?cwd=${CWD}"); [ "$code" = "200" ] && ok "/api/plugins -> 200" || bad "/api/plugins -> ${code}"
 
-providers=$(curl -s "${BASE}/api/models-config" | head -c 40)
+# No pipe: /api/models-config is the one response here whose size is not bounded by anything
+# in this repo, and `curl | head -c` / `curl | grep -q` both kill curl with SIGPIPE once the
+# body outgrows the 64 KiB pipe buffer, which pipefail turns into a failed pipeline.
+models_config=$(curl -s "${BASE}/api/models-config" || true)
+providers=${models_config:0:40}
 if echo "$providers" | grep -q '"providers":{}'; then
   bad "no provider configured yet — set one in the Models page before the conversation tests"
 else
@@ -173,7 +180,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "${BASE}/api/
 # gets past the guard. This is upstream behaviour, unchanged and not fixed
 # by removing the sidecar; it is why the downstream proxy MUST require
 # authentication, not just do Host/Origin rewriting.
-if curl -s --max-time 5 -H 'Host: localhost' "${BASE}/api/models-config" | grep -q '"apiKey":"[^"]'; then
+forged_host=$(curl -s --max-time 5 -H 'Host: localhost' "${BASE}/api/models-config" || true)
+if grep -q '"apiKey":"[^"]' <<<"$forged_host"; then
   warn "/api/models-config returns the provider key in cleartext to anyone that reaches :${PI_WEB_PORT:-30141} — downstream proxy MUST enforce authentication, not just rewrite headers"
 fi
 

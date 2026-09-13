@@ -10,6 +10,13 @@
 > The upstream defects it lists (unredacted API key, no path confinement,
 > no approval gate) are unchanged — moving the credential boundary out of
 > this repo does not fix them.
+>
+> **Note (2026-09-12).** Also historical with respect to versions: this run
+> used pi-web 0.8.4 and an image tagged `ghcr.io/…:latest` built by hand. The
+> current package pins pi-web 0.9.0 (which adds a browser terminal, see the
+> README's security section) and builds `localhost/woow-podman-pi-agent-host:<tag>`
+> through `scripts/install.sh`. Post-install checks for a live host are
+> `tests/smoke.sh`; the application-level suite is still `tests/acceptance.sh`.
 
 **English** · [繁體中文](VERIFICATION_zh-TW.md)
 

@@ -1,0 +1,8 @@
+# Variables scripts/install.sh may substitute for @@NAME@@ in quadlet/* and
+# systemd/* (decision D2). Anything not listed here is a hard error.
+#
+# From ~/.config/pi-agent/pi-agent.env (config/pi-agent.env.example):
+PI_TZ
+# Computed by scripts/render-args.sh from PI_VIDEO_TOOLS:
+PI_IMAGE_VARIANT
+PI_VIDEO_PIPELINE_ENABLED

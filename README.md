@@ -2,7 +2,7 @@
 
 [![Podman](https://img.shields.io/badge/Podman-%E2%89%A54.4%20rootless-892CA0)](https://podman.io)
 [![Quadlet](https://img.shields.io/badge/units-Quadlet%20%2B%20systemd-orange)](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
-[![pi-web](https://img.shields.io/badge/pi--web-0.8.4-blue)](https://www.npmjs.com/package/@agegr/pi-web)
+[![pi-web](https://img.shields.io/badge/pi--web-0.9.0-blue)](https://www.npmjs.com/package/@agegr/pi-web)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **English** · [繁體中文](README_zh-TW.md)
@@ -13,13 +13,12 @@ of [`Woow_k3s_pi_agent_package`](https://github.com/WOOWTECH/Woow_k3s_pi_agent_p
 — the same application surface, rebuilt for a single-host container runtime
 instead of a Kubernetes cluster.
 
-> **This package ships pi-web only. Authentication and Host/Origin rewriting
-> are the responsibility of a same-host reverse proxy** — the shared nginx or
-> Nginx Proxy Manager instance the deployment already runs for its other
-> services. See [Downstream reverse-proxy contract](docs/downstream-nginx.md)
-> for the two headers that MUST be set and the auth mechanism you MUST turn
-> on. Without both, either the UI loads and every data route returns 403, or
-> the provider API key is scrape-able in cleartext.
+> **Read [Security posture](#security-posture) before you expose anything.**
+> Since pi-web 0.9.0 the UI contains a browser terminal. Whoever reaches
+> `127.0.0.1:30141` gets a shell that is equivalent to the account running
+> the container, with that account's home directory mounted read-write.
+> This package ships **no authentication**: a same-host reverse proxy with
+> authentication must sit in front of it ([docs/downstream-nginx.md](docs/downstream-nginx.md)).
 
 ---
 
@@ -28,11 +27,12 @@ instead of a Kubernetes cluster.
 | | |
 |---|---|
 | **Loopback endpoint** | `http://127.0.0.1:30141` on the Podman host — unauthenticated, reverse-proxy-only |
-| **Agent** | `@earendil-works/pi-coding-agent` 0.83.0, imported as a library by pi-web (no separate daemon) |
+| **Agent** | `@earendil-works/pi-coding-agent` 0.85.1, imported as a library by pi-web 0.9.0 (no separate daemon) |
+| **Browser terminal** | `/api/terminal` (node-pty, `SHELL=/bin/bash`) — a login shell inside the container |
 | **CLI** | `pi` on `PATH` inside the container — `podman exec -it pi-web pi` drives the TUI |
 | **Persistence** | one named volume, `pi-agent-data`, holding sessions, skills, config and `$HOME` |
-| **Video pipeline** | ffmpeg, Playwright-Chromium, edge-tts, rclone, Noto CJK fonts (optional at build time) |
-| **Supervision** | `systemd --user` units generated from Quadlet, with lingering so they survive logout and reboot |
+| **Video pipeline** | ffmpeg, Playwright-Chromium, edge-tts, rclone, Noto CJK fonts (optional, see [Settings](#settings)) |
+| **Supervision** | `systemd --user` units generated from Quadlet, `Restart=always`, lingering so they survive logout and reboot |
 
 ---
 
@@ -56,58 +56,142 @@ What is **identical** on purpose: the `pi` launcher wrapper, the CJK path patch,
 
 ## Install
 
-Requires Podman ≥ 4.4 (Quadlet), rootless, on the user account that owns the Podman storage.
+Requires rootless Podman ≥ 4.4 (Quadlet; tested with 4.9.3 on Ubuntu 24.04),
+run as the account that owns the containers. Never use `sudo`.
 
 ```bash
 git clone https://github.com/WOOWTECH/Woow_podman_pi_agent_package.git
 cd Woow_podman_pi_agent_package
-
-# --format=docker is REQUIRED. SHELL and HEALTHCHECK have no OCI equivalent,
-# so a default-format build silently produces an image whose health is never
-# reported and whose `podman ps` status column stays blank.
-podman build --format=docker \
-  -t localhost/woow-podman-pi-agent-host:latest -f Containerfile.host-control .
-
-# Install the units and start. Do NOT use sudo — rootless is the design.
 ./scripts/install.sh
 ```
 
-`install.sh` refuses to run as root, verifies the Quadlet generator is
-present, enables `loginctl` lingering, drops three units into
-`~/.config/containers/systemd/` (`pi-agent.network`,
-`pi-agent-data.volume`, `pi-web.container`) plus the two health-check
-units under `~/.config/systemd/user/`, then waits for the container to
-report `healthy`. It does **not** configure a proxy — that step is
-[docs/downstream-nginx.md](docs/downstream-nginx.md).
+That is the whole install. `scripts/install.sh`:
+
+1. refuses root, checks Podman and the Quadlet generator, enables lingering;
+2. creates `~/.config/pi-agent/pi-agent.env` from `config/pi-agent.env.example`
+   (mode 0600) on the first run;
+3. renders the units from `quadlet/` and `systemd/` with those settings and
+   checks them with the Quadlet generator (`quadlet -dryrun`) and
+   `systemd-analyze --user verify`;
+4. **builds both images locally**: `Containerfile` as
+   `localhost/woow-podman-pi-agent:<tag>`, then `Containerfile.host-control`
+   on top of it as `localhost/woow-podman-pi-agent-host:<tag>`, always with
+   `--format=docker` (the `SHELL` and `HEALTHCHECK` instructions have no OCI
+   equivalent). A cold build takes 5-20 minutes and needs network; a rebuild of
+   the same revision is fully cached;
+5. installs `pi-agent.network`, `pi-agent-data.volume` and `pi-web.container`
+   into `~/.config/containers/systemd/` and the health units into
+   `~/.config/systemd/user/`, writing only files that changed;
+6. starts what is new and **restarts pi-web when its unit or its image
+   changed** (an unchanged re-run restarts nothing), waits for `healthy`, and
+   runs `tests/smoke.sh`.
+
+Every image is built before any unit is touched, so a failed build never
+causes downtime.
+
+| Flag | Effect |
+|---|---|
+| `--build-only` | build both images and stop — no config, no units, nothing restarted. The way to prepare ahead of a maintenance window |
+| `--rebuild` | build both images again even though the pinned tag exists |
+| `--no-build` | never build; the pinned images must already be there (what `upgrade.sh` uses) |
+| `--no-start` | install the units and `daemon-reload`, but start or restart nothing |
+| `--dry-run` | render, validate and report what would change; touch nothing |
+
+The tag is `<pi-web version>-r<package revision>` (today `0.9.0-r1`) and is
+pinned in `quadlet/pi-web.container`; `Pull=never`, because the images exist
+only on the host that built them. The base image is not published to any
+registry; publishing it to GHCR (so hosts can skip the base build) is future
+work.
 
 First boot on a fresh volume downloads roughly 720MB of video tooling in the
-background. **The UI is usable throughout** — the download does not gate
-startup.
+background. **The UI is usable throughout.**
 
-### Slim build
+### Settings
 
-`--build-arg VIDEO_TOOLS=0` gives a ~700MB image with no ffmpeg, Chromium
-libraries, CJK fonts or rclone. **Set `VIDEO_PIPELINE_ENABLED=false` in
-`quadlet/pi-web.container` when you do**, or the entrypoint keeps invoking
-a bootstrap that cannot succeed on that image.
+`~/.config/pi-agent/pi-agent.env` is read by the install and upgrade scripts
+only. They render the values into the installed units; systemd and Podman never
+read the file. Change a value, then run `./scripts/install.sh` again.
+
+| Key | Default | Effect |
+|---|---|---|
+| `PI_TZ` | `Asia/Taipei` | container timezone (`Environment=TZ=`) |
+| `PI_VIDEO_TOOLS` | `true` | `false` builds the slim image (`--build-arg VIDEO_TOOLS=0`, about 700MB, no ffmpeg / Chromium libraries / CJK fonts / rclone), tags it `…-slim` and sets `VIDEO_PIPELINE_ENABLED=false` |
+
+Everything account-specific in the unit uses systemd specifiers: `%h` for the
+home directory and `%t` for `XDG_RUNTIME_DIR`. The same unit works for any user
+and any uid; nothing needs hand-editing.
+
+### Profiles
+
+| Profile | Status | What pi-web gets |
+|---|---|---|
+| **host-control** (default, the only one today) | shipped | the owning account's home at `/host$HOME` (rw), its rootless Podman socket, its user systemd bus. The agent can manage every container of that account. |
+| slim / no host-control | planned | the base image without the host mounts. |
+
+### Upgrade
+
+```bash
+git pull
+./scripts/upgrade.sh           # hot data export, build, switch, smoke; automatic rollback
+```
+
+`upgrade.sh` exports `pi-agent-data`, builds the newly pinned tag while the old
+pi-web keeps serving, installs, and runs the smoke test. If the new image does
+not come up healthy it puts the previous units back and restarts on the
+previous image, which is kept until `./scripts/upgrade.sh --prune`.
+`--no-backup` skips the export.
+
+### Backup and restore
+
+```bash
+./scripts/backup.sh                 # cold: stops pi-web for the export, then starts it
+./scripts/backup.sh --hot           # no stop; a session written meanwhile may be torn
+./scripts/restore.sh ~/backups/pi-agent/pi-agent-data-<ts>.tar
+```
+
+Backups land in `~/backups/pi-agent/` as 0600 files in a 0700 directory, each
+with a `.sha256`. **They contain `models.json`, and therefore the provider API
+key.** `restore.sh` verifies the checksum, asks for confirmation, exports the
+current contents first, then replaces the volume and runs the smoke test.
 
 ### Uninstall
 
 ```bash
-./scripts/uninstall.sh           # stops and removes the units, KEEPS the data volume
-./scripts/uninstall.sh --purge   # also deletes pi-agent-data (sessions, skills, keys)
+./scripts/uninstall.sh                 # stops and removes the units; KEEPS the data volume
+./scripts/uninstall.sh --purge --yes   # also deletes pi-agent-data, after a final export
 ```
 
-The downstream proxy's Proxy Host / server block is your job to clean up.
+The env file, the images and the reverse-proxy configuration are never deleted.
+
+### Converging a hand-edited install
+
+Hosts installed with an earlier version of this repo (toypark1234, openclaw)
+have `pi-web.container` copied verbatim and sometimes edited by hand
+(`/home/<user>` in two lines). Converge them with:
+
+```bash
+cd Woow_podman_pi_agent_package && git pull
+./scripts/install.sh --build-only   # optional, ahead of time: no service impact
+./scripts/install.sh                # adopts the old units, keeps copies, restarts pi-web once
+```
+
+The old files are copied to `~/.local/state/woow-quadlet/pi-agent/` (`replaced/`,
+`adopted/`) before they are overwritten. Mounts, environment, network, volume
+and port stay the same; only the image tag changes (`:latest` → `:0.9.0-r1`)
+and the auto-update label goes. To roll back, copy the old files back and run
+`systemctl --user daemon-reload && systemctl --user restart pi-web.service`;
+the old `:latest` image is still there.
 
 ---
 
 ## First run
 
-1. Point your same-host nginx / NPM at `127.0.0.1:30141` with the two
-   required `proxy_set_header` lines from
-   [docs/downstream-nginx.md](docs/downstream-nginx.md), then put
-   authentication on that proxy.
+1. Put a reverse proxy **with authentication** in front of pi-web. On a host
+   running [Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm),
+   install it with `./scripts/install.sh --with-pi-web-front` (which is what
+   records `NPM_PI_WEB_FRONT=true` in `~/.config/npm/npm.env`), then create a
+   proxy host with Forward Hostname `pi-web`, port `30141` and an access list.
+   Plain nginx: see [docs/downstream-nginx.md](docs/downstream-nginx.md).
 2. Open the UI at whatever hostname the proxy serves.
 3. Go to **Models**, add your provider (OpenRouter, Anthropic, OpenAI …) and
    paste the API key. The key is written to `models.json` on the volume
@@ -125,31 +209,40 @@ and rotating it does not mean editing a unit file and restarting.
 ## Layout
 
 ```
-Containerfile              debian:bookworm-slim + Node 22 + pi-web, with build-time assertions
-Containerfile.host-control OpenClaw host image built as localhost/woow-podman-pi-agent-host:latest
+Containerfile              debian:bookworm-slim + Node 22 + pi-web 0.9.0, multi-stage node-pty build
+Containerfile.host-control host-control layer (podman + systemd clients) on the local base
+config/pi-agent.env.example   per-host settings, installed to ~/.config/pi-agent/pi-agent.env
 quadlet/
-  pi-agent.network         private bridge, aardvark-dns resolves container names
+  pi-agent.network         private bridge; aardvark-dns resolves container names
   pi-agent-data.volume     the single named volume
   pi-web.container         the agent; publishes 127.0.0.1:30141 for a same-host reverse proxy
+  render-vars              the only variables install.sh may substitute into the units
 systemd/
   pi-web-health.service    oneshot: podman healthcheck run pi-web
-  pi-web-health.timer      every 30s
+  pi-web-health.timer      every 30s (needed where podman's own health timer never registers)
 patches/
   fix-unicode-space-paths.mjs   the CJK path fix, asserts every hunk
-rootfs/usr/local/bin/
-  pi                       launcher — resolves the transitively-installed CLI
-  pi-agent-env.sh          the one definition of the runtime environment
-  pi-web-start.sh          entrypoint: umask, permissions, skills bridge, TZ, video bootstrap
-  video-tools-init.sh      sentinel-guarded, self-healing first-run install
-scripts/install.sh         rootless installer (no auth, no proxy)
-scripts/uninstall.sh       removal, volume kept by default
-tests/acceptance.sh        the no-LLM acceptance suite
-tests/chat.mjs             conversation harness — drives a real chat over pi-web's own API
-tests/host-profile.sh      static assertions on the OpenClaw host-profile shape
-docs/ARCHITECTURE.md       diagrams and the reasoning behind each decision
-docs/downstream-nginx.md   the contract the same-host reverse proxy MUST satisfy
-docs/plans/                dated design notes for the refactors that shaped this package
+rootfs/usr/local/bin/      pi launcher, runtime environment, entrypoint, video bootstrap
+scripts/
+  install.sh               build images, render, install, restart on change, smoke
+  upgrade.sh               backup, build, switch, smoke, automatic rollback
+  backup.sh restore.sh     pi-agent-data export / import
+  uninstall.sh             removal, volume kept unless --purge
+  render-args.sh           values computed from the env file (shared with tests/dryrun.sh)
+  common.sh                adoption of the helper units an earlier install.sh left behind
+  lib/quadlet-lib.sh       vendored WOOWTECH Quadlet library (do not edit; CI checks its hash)
+tests/
+  dryrun.sh                render + quadlet -dryrun + systemd-analyze verify (CI)
+  dryrun.local.sh          pi-agent invariants on the generated podman command (CI)
+  host-profile.sh          static checks on the host-control profile (CI)
+  adopt-legacy.sh          install on a host that still has the pre-manifest units (CI)
+  smoke.sh                 post-install checks on a real host
+  acceptance.sh chat.mjs   the no-LLM acceptance suite and the conversation harness
+docs/                      architecture, downstream proxy contract, Armbian notes, history
 ```
+
+CI (`.github/workflows/quadlet-ci.yml`, ubuntu-24.04 with podman 4.9.3) runs
+`tests/dryrun.sh` and `shellcheck`, and verifies the vendored library's hash.
 
 ---
 
@@ -192,12 +285,14 @@ podman logs -f pi-web                          # application output
 podman exec -it pi-web bash                    # a shell in the agent's world
 podman exec -it pi-web pi                      # the agent TUI
 systemctl --user restart pi-web                # restart the container
+bash tests/smoke.sh                            # post-install checks
 ```
 
-To rebuild the video toolchain: set `RESET_VIDEO_TOOLS=true` in
-`pi-web.container`, `systemctl --user daemon-reload && systemctl --user
-restart pi-web`, wait for the reinstall, then set it back to `false`.
-Left `true`, it re-downloads ~720MB on every restart.
+To rebuild the video toolchain once: set `RESET_VIDEO_TOOLS=true` in the
+**installed** `~/.config/containers/systemd/pi-web.container`, run
+`systemctl --user daemon-reload && systemctl --user restart pi-web`, wait for
+the reinstall, then run `./scripts/install.sh`: it puts the rendered unit back
+(`RESET_VIDEO_TOOLS=false`, with a copy of your edit kept) and restarts.
 
 ---
 
@@ -205,44 +300,61 @@ Left `true`, it re-downloads ~720MB on every restart.
 
 Stated plainly.
 
-**What this deployment does well.** It is rootless, so the agent's `bash`
-tool runs as an unprivileged host user rather than as node root. It sets
-`NoNewPrivileges`. pi-web publishes on `127.0.0.1` only. Credential files
-are mode `600` from birth, not repaired after the fact.
+**The browser terminal is a root-equivalent shell for the account.** pi-web
+0.9.0 added `/api/terminal`, which spawns a login shell through node-pty. The
+shell runs as root *inside* the container; rootless Podman maps that to the
+host account that runs the unit. With the host-control mounts that account's
+entire home directory is mounted read-write at `/host$HOME`, its rootless
+Podman socket is reachable (every container of the account, this one included)
+and so is its user systemd. In practice, anyone who reaches the terminal can:
 
-**What it does not do.** There is no authentication in this repo. And
-`GET /api/models-config` returns the provider API key in cleartext to any
-caller that reaches the loopback endpoint. Measured, not inferred:
+- read and change every file the account owns: `~/.ssh`, other services' data
+  and volumes under `~/.local/share/containers`, tunnel tokens;
+- start, stop, exec into and replace every container of that account;
+- install persistent user units;
+- read the provider API key: `GET /api/models-config` returns it in cleartext,
+  and so does `cat /data/pi-agent/models.json`.
 
-```
-$ curl -H 'Host: localhost' http://127.0.0.1:30141/api/models-config
-{"providers":{"openrouter":{"apiKey":"sk-or-v1-…","baseUrl":…
-```
+If the account is in `sudo`, one password away from host root. None of this is
+a bug the packaging can fix: upstream pi-web has no authentication, no path
+confinement, no approval gate and no `canUseTool` hook.
 
-Upstream pi-web also has no path confinement, no approval gate, and no
-`canUseTool` hook — the agent can read and write anywhere the container
-user can, and run any command. These are upstream properties; no amount of
-packaging fixes them.
+**Therefore authentication must be enforced downstream**, by the same-host
+reverse proxy, on every path:
 
-**Therefore.** Treat `127.0.0.1:30141` as equivalent to a shell plus your
-API key. The same-host reverse proxy is the credential boundary — see
-[docs/downstream-nginx.md](docs/downstream-nginx.md). The proxy MUST rewrite
-Host and Origin, MUST enforce authentication (Basic auth, CF Access, mTLS,
-your choice), and SHOULD terminate TLS so the credentials do not cross the
-LAN in base64.
+- NPM ([Woow_podman_nginxpm](https://github.com/WOOWTECH/Woow_podman_nginxpm)
+  with `NPM_PI_WEB_FRONT=true`) plus an access list with Basic auth, and
+- for a public hostname, **Cloudflare Access** in front of it as a second,
+  independent layer. Basic auth alone is one password between the Internet
+  and a shell.
 
-Do NOT change `PublishPort` to `0.0.0.0` to "just test something". The
-endpoint is unauthenticated and returns the provider key on demand; a widened
-publish is a scrape target the second it exists.
+`PI_WEB_PASSWORD` (pi-web's own Basic auth) stays unwired on purpose: the
+owner's decision is that authentication lives downstream.
+
+**Any path to 127.0.0.1:30141 that skips the proxy is an unauthenticated
+shell.** That includes a tailnet `tailscale serve` forward to
+`127.0.0.1:30141` (every tailnet member gets a shell), an `ssh -L` shared with
+other people, and another container on the host that can reach the host's
+loopback. `scripts/install.sh` warns about a non-loopback listener on 30141 and
+about a woow-tailscale serve forward to it. Never change `PublishPort` to
+`0.0.0.0` "just to test something".
+
+**What this deployment does well.** It is rootless, so a container escape
+lands on an unprivileged account rather than host root. `NoNewPrivileges` is
+set. pi-web publishes on `127.0.0.1` only. The image carries no compiler.
+Credential files are mode `600` from birth, and backups are 0600 in 0700
+directories.
 
 ---
 
 ## Documentation
 
 - [Downstream reverse-proxy contract](docs/downstream-nginx.md) — the two
-  headers, the auth requirement, and sample config for plain nginx + NPM
+  headers, the auth requirement, the NPM pi-web front and a plain-nginx sample
 - [Architecture and design decisions](docs/ARCHITECTURE.md) — topology,
   the trust-guard problem, boot sequence, storage, k3s↔Podman mapping
+- [Armbian / arm64 notes](docs/armbian-arm64-deployment.md) — podman-static
+  under `/usr/local`, cgroupfs, health timer
 - [繁體中文說明](README_zh-TW.md)
 
 ## License

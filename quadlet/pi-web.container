@@ -1,89 +1,98 @@
-# pi-web — the agent and its web UI.
+# pi-web - the agent and its web UI, host-control profile.
 #
-# Publishes 127.0.0.1:30141 so a reverse proxy running on the same host (the
-# shared nginx / Nginx Proxy Manager already present on this deployment) can
-# reach it. Nothing on the LAN can reach it directly — the loopback binding
-# is the point.
+# scripts/install.sh renders this file (decision D2: the tokens listed in
+# quadlet/render-vars get their values from ~/.config/pi-agent/pi-agent.env) and
+# installs the result to ~/.config/containers/systemd/pi-web.container. Edit the env file,
+# not the installed copy: the next install overwrites local edits (after
+# keeping a backup copy).
 #
-# The downstream proxy MUST rewrite two headers before forwarding:
+# Publishes 127.0.0.1:30141 only. A same-host reverse proxy reaches pi-web by
+# container name on the pi-agent network (Woow_podman_nginxpm with
+# NPM_PI_WEB_FRONT=true) and MUST send:
 #
 #     proxy_set_header Host localhost;
 #     proxy_set_header Origin "";
 #
-# pi-web's isApiRequestAllowed() rejects any Host that is not a loopback
-# name or a raw IP, and any Origin that does not match. A hostname in front
-# (Cloudflare Tunnel, internal DNS name, reverse proxy virtual host) fails
-# both halves and every auth-gated route answers 403 "Untrusted API
-# request". The symptom is distinctive: the UI renders and then does
-# nothing. See docs/downstream-nginx.md for the sample proxy config.
+# pi-web's isApiRequestAllowed() rejects any Host that is not loopback or a raw
+# IP, and any Origin that does not match. Behind a hostname, the UI renders and
+# every /api/* route answers 403 "Untrusted API request".
+# See docs/downstream-nginx.md.
 #
-# Authentication is not shipped here either — the same downstream proxy
-# handles it (HTTP Basic, CF Access, whatever the proxy supports). Anything
-# that reaches the loopback port (this host's user account, other containers
-# sharing the host if given access) gets an unauthenticated coding agent
-# that also answers /api/models-config with the provider API key in
-# cleartext.
+# There is NO authentication in pi-web, and the same proxy must enforce it.
+# Since pi-web 0.9.0, reaching this port means:
+#   - a browser terminal (/api/terminal) running as container root. Rootless,
+#     that maps to the host account that runs this unit.
+#   - with the host-control mounts below: that account's whole home directory
+#     (read-write), its rootless Podman socket (every container of the
+#     account, including this one) and its user systemd over D-Bus.
+#   - GET /api/models-config returns the provider API key in cleartext.
+# Treat any path to this port that bypasses the proxy (for example a tailnet
+# `tailscale serve` forward to 127.0.0.1:30141) as an unauthenticated shell.
+#
+# Paths use systemd specifiers, which systemd expands when it loads the
+# generated unit: %h = home of the account running the unit, %t = its
+# XDG_RUNTIME_DIR. One file serves every account and uid.
 [Unit]
-Description=pi-web — pi coding agent web UI
+Description=pi-web - pi coding agent web UI
 Documentation=https://github.com/WOOWTECH/Woow_podman_pi_agent_package
-After=network-online.target podman.socket
-Wants=network-online.target
+After=podman.socket
 Requires=podman.socket
 
 [Container]
 ContainerName=pi-web
-Image=localhost/woow-podman-pi-agent-host:latest
 
-# The image is built locally with `podman build --format=docker` and does not
-# exist in any registry. Without Pull=never, Quadlet tries to fetch it on every
-# start and the unit fails on a tag that was never pushed. AutoUpdate=local
-# tracks the local image instead of a registry digest.
+# Built by scripts/install.sh: first Containerfile (the base), then
+# Containerfile.host-control on top of it. Tag = <pi-web version>-r<package
+# revision>, plus "-slim" when PI_VIDEO_TOOLS=false. Bump the revision whenever
+# either Containerfile, rootfs/ or patches/ changes. The image is in no
+# registry, so Pull=never.
+Image=localhost/woow-podman-pi-agent-host:0.9.0-r1@@PI_IMAGE_VARIANT@@
 Pull=never
-AutoUpdate=local
 
 Network=pi-agent.network
 
-# Loopback-only publish. The reverse proxy is expected to be same-host and
-# reach this via 127.0.0.1:30141. Never widen to 0.0.0.0 — the endpoint is
-# unauthenticated and returns the provider key on /api/models-config.
+# Loopback-only publish. Never widen it to 0.0.0.0 (see above).
 PublishPort=127.0.0.1:30141:30141
 
 Volume=pi-agent-data.volume:/data/pi-agent
-Volume=/home/woowtechopenclaw:/host/home/woowtechopenclaw:rw
-Volume=/run/user/1000/podman/podman.sock:/run/host/podman/podman.sock:rw
-Volume=/run/user/1000/bus:/run/host/user-bus:rw
+# Host-control profile: the owning account's home, rootless Podman socket and
+# user bus.
+Volume=%h:/host%h:rw
+Volume=%t/podman/podman.sock:/run/host/podman/podman.sock:rw
+Volume=%t/bus:/run/host/user-bus:rw
 
 # Bound on all interfaces INSIDE the container network namespace. PublishPort
-# above narrows that to host loopback only.
+# above narrows that to host loopback.
 Environment=PI_WEB_HOSTNAME=0.0.0.0
 Environment=PI_WEB_PORT=30141
 Environment=PI_AGENT_DATA_DIR=/data/pi-agent
 Environment=LOG_LEVEL=info
-Environment=TZ=Asia/Taipei
+Environment=TZ=@@PI_TZ@@
 Environment=PATH=/data/pi-agent/home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=CONTAINER_HOST=unix:///run/host/podman/podman.sock
 Environment=DOCKER_HOST=unix:///run/host/podman/podman.sock
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/host/user-bus
-Environment=HOST_HOME=/host/home/woowtechopenclaw
+Environment=HOST_HOME=/host%h
 
 # Video pipeline: ffmpeg / Playwright-Chromium / edge-tts / rclone. The first
-# boot on a fresh volume downloads roughly 720MB in the background; the UI
-# serves normally throughout. Set false when the image was built with
-# --build-arg VIDEO_TOOLS=0, or the bootstrap runs and fails on every boot.
-Environment=VIDEO_PIPELINE_ENABLED=true
+# boot on a fresh volume downloads about 720 MB in the background while the UI
+# serves normally. Rendered from PI_VIDEO_TOOLS: false on the slim image.
+Environment=VIDEO_PIPELINE_ENABLED=@@PI_VIDEO_PIPELINE_ENABLED@@
 # One-shot maintenance: set true, restart, wait for the reinstall, set back to
-# false. Left true it re-downloads ~720MB on every restart.
+# false. Left true it re-downloads about 720 MB on every restart.
 Environment=RESET_VIDEO_TOOLS=false
 
-# The agent runs arbitrary model-authored code. Rootless already confines it to
-# the unprivileged host user; dropping the capabilities it never uses costs
-# nothing and narrows what a container escape would inherit.
+# The agent runs arbitrary model-authored code. Rootless already confines it
+# to the unprivileged host user; this narrows what an escape would inherit.
 NoNewPrivileges=true
 
 [Service]
+# A container stopped by systemd is stopped with SIGTERM: an entrypoint that does not
+# trap it exits 143 (128+15), which would leave the unit failed after a clean stop.
+SuccessExitStatus=143
 Restart=always
 # A cold volume plus the venv bootstrap can take minutes before /api/home
-# answers. systemd should not give up during that window.
+# answers.
 TimeoutStartSec=900
 
 [Install]

@@ -1,11 +1,9 @@
-# Private bridge for the stack. netavark's aardvark-dns resolves container
-# names on it, which is how nginx finds pi-web without any hardcoded IP and
-# without the two containers having to share a network namespace.
+# Private bridge for the stack. netavark's aardvark-dns resolves container names
+# on it. A same-host reverse proxy joins this network to reach "pi-web:30141" by
+# name: Woow_podman_nginxpm does so when installed with NPM_PI_WEB_FRONT=true.
+# The network carries no data; it is only a name that both packages agree on.
 #
-# Sharing a namespace (a Podman pod) would also work and is what the k3s
-# deployment did — but only because ttyd had to sit on the same localhost as
-# pi-web. With ttyd gone, a plain network is the simpler and more Podman-native
-# arrangement, and it does not need the .pod unit type that Podman 4.9 lacks.
+# A plain network, not a pod: podman 4.9 has no .pod Quadlet type.
 [Unit]
 Description=pi-agent private network
 

@@ -52,8 +52,11 @@ Installing those switches the storage driver to overlay+fuse-overlayfs, and if
 your existing store is vfs, every image already built on the host becomes
 invisible.
 
-`scripts/install.sh` probes three fixed paths for the generator, none of them
-under `/usr/local`. One symlink satisfies it:
+`scripts/install.sh` (through `scripts/lib/quadlet-lib.sh`) runs the Quadlet
+generator at `/usr/libexec/podman/quadlet` for its dry-run check, and looks for
+`podman-user-generator` in systemd's user-generators directories, including
+`/usr/local/lib/systemd/user-generators`. One symlink satisfies the first
+(`QL_QUADLET_BIN=/usr/local/libexec/podman/quadlet` works too):
 
 ```sh
 mkdir -p /usr/libexec/podman
@@ -105,7 +108,9 @@ Error: container <id> and volume <name> share lock ID 0: deadlock due to lock mi
 **The old database keeps coming back.** Anything that still calls the 4.3.x
 binary recreates `bolt_state.db`, and Podman 6 then refuses to run at all.
 Audit every periodic caller before migrating. In this repo,
-`systemd/pi-web-health.service` invokes `/usr/bin/podman` every 30 seconds; any
+`systemd/pi-web-health.service` invokes a bare `podman` every 30 seconds, which
+systemd resolves on its own search path (`/usr/local/bin` first, so a
+podman-static install wins); any
 site-local supervisor script is likely to as well. Point them at the new binary
 or stop them for the duration.
 
@@ -180,20 +185,15 @@ after) and `nftables.service` stays disabled.
 
 ## 6. Health status stays `starting`
 
-Known, and this repo already ships the workaround. Podman's native rootless
-health timer does not register, so `podman ps` shows `(starting)` indefinitely
-even while `/api/home` answers 200. `pi-web-health.timer` refreshes the state
-every 30s.
+Known, and this repo ships the workaround. Podman's native rootless health
+timer does not register, so `podman ps` shows `(starting)` indefinitely even
+while `/api/home` answers 200. `pi-web-health.timer` refreshes the state every
+30s.
 
-Note that `scripts/install.sh` runs under `set -euo pipefail` and enables that
-timer *after* starting `pi-web.service`. If the first start fails for any of the
-reasons above, the script exits before the timer is enabled and the container
-looks unhealthy even once the real fault is fixed. Enable it by hand after a
-failed run:
-
-```sh
-systemctl --user enable --now pi-web-health.timer
-```
+`scripts/install.sh` enables and starts that timer *before* it starts or
+restarts `pi-web.service`, so a failed first start no longer leaves the timer
+off, and it waits for health with an active `podman healthcheck run`, which
+works whether or not the native timer exists.
 
 ## 7. install.sh needs a user session bus
 
@@ -210,27 +210,20 @@ The script is idempotent, so re-running it after that is safe.
 
 ## 8. Adapting the units to a different account
 
-`quadlet/pi-web.container` names `/home/woowtechopenclaw` in two places, the
-bind mount and `HOST_HOME`. The `/run/user/1000/...` paths in the same file
-assume that account is uid 1000, so on a host where uid 1000 is a different
-user only the home path needs changing.
+Nothing to adapt any more. `quadlet/pi-web.container` uses systemd specifiers
+(`%h` for the home directory, `%t` for `XDG_RUNTIME_DIR`), which systemd
+expands for whichever account runs the unit, so the same file works for any
+user and any uid. Earlier revisions named `/home/woowtechopenclaw` and
+`/run/user/1000` and had to be edited per host; `scripts/install.sh` adopts
+such an edited install (keeping a copy of it) and replaces it with the rendered
+unit.
 
-Keep such edits in the working tree rather than in the installed copies:
-`install.sh` verifies that what it installed matches its source, and
-`git diff` then shows exactly how the deployment differs from this repo.
+## 9. The slim image (VIDEO_TOOLS=0)
 
-`tests/host-profile.sh` asserts the reference machine's literal values, so it
-fails on those edits by design. The remaining assertions — loopback-only
-publish, no 0.0.0.0 publish, the socket and bus mounts, `NoNewPrivileges`,
-health timer cadence, no nginx leftovers — still pass and are the ones worth
-watching.
-
-## 9. If the image is built with VIDEO_TOOLS=0
-
-Set `VIDEO_PIPELINE_ENABLED=false` in the unit, as the comment in
-`quadlet/pi-web.container` says. Leaving it true is harmless — `pi-web-start.sh`
-checks `PI_VIDEO_TOOLS_BUILT` and logs a skip rather than attempting the
-download — but the acceptance suite will (correctly) flag the mismatch.
+Set `PI_VIDEO_TOOLS=false` in `~/.config/pi-agent/pi-agent.env` and run
+`scripts/install.sh`. It builds the base with `--build-arg VIDEO_TOOLS=0`, tags
+both images `…-slim`, and renders `VIDEO_PIPELINE_ENABLED=false` into the
+unit, so the image and the unit can no longer disagree.
 
 ---
 
@@ -249,7 +242,7 @@ podman exec -i pi-web bash -s < tests/acceptance.sh
 The image does not ship `tests/` — only `patches/` and `rootfs/` are `COPY`ed —
 so pipe the suite in rather than looking for it at `/opt/tests`.
 
-Host-control checks, once the OpenClaw profile is running:
+Host-control checks, once pi-web is running:
 
 ```sh
 podman exec pi-web podman --remote ps          # host's rootless containers
