@@ -166,9 +166,15 @@ ARG VIDEO_TOOLS=1
 # without an init every abandoned child would linger as a zombie. As of 0.9.0
 # the built-in browser terminal forks a login shell per session through
 # node-pty, which makes the reaper load-bearing rather than merely tidy.
+# tmux — kept in parity with the k3s sibling image, which had to add this
+# after Omnigent's native-terminal launcher (used there for the Pi harness)
+# turned out to shell out to `tmux` unconditionally and fail without it. Not
+# yet exercised on this deployment (no Omnigent integration here today), but
+# baking it in now avoids the same class of runtime-apt-install-disappears-
+# on-restart bug if/when this flavor gets one.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl git gnupg jq openssh-client tini procps less vim-tiny \
+       ca-certificates curl git gnupg jq openssh-client tini tmux procps less vim-tiny \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -214,6 +220,7 @@ RUN chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/vid
     # never links its bin — without the launcher, every terminal workflow dies.
     && test -x "$(command -v pi)" \
     && pi --version \
+    && tmux -V \
     # node-pty loads. This is the cross-stage ABI assertion: stage 1 compiled
     # pty.node against ITS nodejs, and this is the first moment the module is
     # asked to load under the nodejs that will actually run it.
