@@ -9,7 +9,7 @@
 # localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
 # then builds Containerfile.host-control on top of it:
 #
-#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r2 -f Containerfile .
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r3 -f Containerfile .
 #
 # Never tag a local build with a ghcr.io/... name: the base is not published, and
 # a registry-looking local tag hides that from every fresh host.
@@ -107,12 +107,19 @@ ARG PI_WEB_VERSION=0.12.0
 RUN npm install -g --omit=dev --prefix=/opt/piweb "@agegr/pi-web@${PI_WEB_VERSION}" \
     && rm -rf /tmp/npm-cache
 
-# Lock-pinned defaults for fresh installs. Persistent per-user binaries stay
-# first on PATH so existing/custom versions are never overwritten.
-COPY cli-runtime/ /opt/pi-clis/
-RUN npm ci --omit=dev --prefix=/opt/pi-clis \
-    && /opt/pi-clis/node_modules/.bin/claude --version | grep -q '^2.1.296' \
-    && /opt/pi-clis/node_modules/.bin/codex --version | grep -q '0.162.1' \
+# Lock-pinned defaults for fresh installs. Keep each CLI in a separate image
+# layer; the combined install produced a 377 MiB blob that failed on a slow
+# production pull. Persistent user binaries still take precedence at runtime.
+COPY cli-runtime/claude/ /opt/pi-clis/claude/
+RUN npm ci --omit=dev --prefix=/opt/pi-clis/claude \
+    && /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296' \
+    && chmod -R a+rX,go-w /opt/pi-clis/claude \
+    && rm -rf /tmp/npm-cache
+
+COPY cli-runtime/codex/ /opt/pi-clis/codex/
+RUN npm ci --omit=dev --prefix=/opt/pi-clis/codex \
+    && /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1' \
+    && chmod -R a+rX,go-w /opt/pi-clis/codex \
     && rm -rf /tmp/npm-cache
 
 # Validate the installed native module by loading it and checking its API.
@@ -198,25 +205,37 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Video toolchain. fonts-noto-cjk is not optional for a zh-TW deployment:
-# nothing else in Debian carries CJK glyphs for libass subtitle burn. The
-# Chromium .so set is what Playwright's downloaded browser links against at
-# capture time; the browser binary itself lands on the volume at first boot.
+# Video toolchain layers are split so none of the large media/font/browser
+# groups becomes a single blob that stalls on a slow GHCR connection.
+RUN if [ "${VIDEO_TOOLS}" = "1" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg \
+      && apt-get clean \
+      && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*; \
+    else \
+      echo "VIDEO_TOOLS=0 — skipping Python and ffmpeg"; \
+    fi
+
 RUN if [ "${VIDEO_TOOLS}" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends \
-         python3 python3-venv python3-pip \
-         ffmpeg \
          fonts-noto-cjk fonts-noto-color-emoji fontconfig \
          libnss3 libatk-bridge2.0-0 libcups2 libxcomposite1 libxdamage1 \
          libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
-      && ARCH="$(dpkg --print-architecture)" \
+      && apt-get clean \
+      && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*; \
+    else \
+      echo "VIDEO_TOOLS=0 — skipping fonts and Playwright libraries"; \
+    fi
+
+RUN if [ "${VIDEO_TOOLS}" = "1" ]; then \
+      ARCH="$(dpkg --print-architecture)" \
       && curl -fsSL "https://downloads.rclone.org/rclone-current-linux-${ARCH}.deb" -o /tmp/rclone.deb \
       && dpkg -i /tmp/rclone.deb \
       && apt-get clean \
       && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*; \
     else \
-      echo "VIDEO_TOOLS=0 — skipping ffmpeg, Chromium libs, fonts and rclone"; \
+      echo "VIDEO_TOOLS=0 — skipping rclone"; \
     fi
 
 # The finished, patched pi-web tree from stage 1. `npm install -g --prefix` put
@@ -224,13 +243,13 @@ RUN if [ "${VIDEO_TOOLS}" = "1" ]; then \
 # `pi-web` bin stays a working RELATIVE symlink into lib/node_modules.
 COPY --from=piweb-builder /opt/piweb/lib/node_modules /usr/local/lib/node_modules
 COPY --from=piweb-builder /opt/piweb/bin              /usr/local/bin
-COPY --from=piweb-builder /opt/pi-clis                  /opt/pi-clis
+COPY --from=piweb-builder /opt/pi-clis/claude /opt/pi-clis/claude
+COPY --from=piweb-builder /opt/pi-clis/codex /opt/pi-clis/codex
 
 COPY rootfs/ /
 
-RUN ln -s /opt/pi-clis/node_modules/.bin/claude /usr/local/bin/claude \
-    && ln -s /opt/pi-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && chmod -R a+rX,go-w /opt/pi-clis \
+RUN ln -s /opt/pi-clis/claude/node_modules/.bin/claude /usr/local/bin/claude \
+    && ln -s /opt/pi-clis/codex/node_modules/.bin/codex /usr/local/bin/codex \
     && claude --version | grep -q '^2.1.296' \
     && codex --version | grep -q '0.162.1' \
     && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh \

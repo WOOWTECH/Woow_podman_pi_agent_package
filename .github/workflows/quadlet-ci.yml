@@ -1,5 +1,5 @@
 # .github/workflows/quadlet-ci.yml: vendored by Woow_quadlet_migration_plan/lib/sync-lib.sh.
-# Static checks plus the pi-web builder stage; image-build checks cover OAuth and CLI binaries.
+# Static checks plus the full pi-web runtime image; image checks cover OAuth, CLIs, and layer sizes.
 name: quadlet-ci
 
 on:
@@ -33,8 +33,19 @@ jobs:
           /usr/libexec/podman/quadlet -version
           shellcheck --version | sed -n 2p
 
-      - name: Build pi-web stage and verify SDK OAuth behavior
-        run: podman build --target piweb-builder --format=docker -f Containerfile .
+      - name: Verify pinned CLI image layout
+        run: node tests/cli-image-layers.mjs
+
+      - name: Build full image and verify CLI binaries
+        run: |
+          podman build --format=docker -t localhost/pi-agent:test -f Containerfile .
+          podman run --rm --entrypoint /usr/local/bin/claude localhost/pi-agent:test --version | grep -q '^2.1.296'
+          podman run --rm --entrypoint /usr/local/bin/codex localhost/pi-agent:test --version | grep -q '0.162.1'
+
+      - name: Reject oversized image layers
+        run: |
+          podman history --no-trunc --format json localhost/pi-agent:test > /tmp/pi-agent-history.json
+          node tests/assert-podman-layer-sizes.mjs /tmp/pi-agent-history.json
 
       - name: Vendored quadlet-lib is unmodified
         run: sha256sum -c scripts/lib/quadlet-lib.manifest
