@@ -40,9 +40,9 @@
 # WHY A BUILDER STAGE EXISTS AS OF pi-web 0.9.0
 #
 # 0.9.0 added a browser terminal, and with it a hard dependency on node-pty,
-# which is a native addon. node-pty 1.1.0 ships prebuilt binaries for darwin
-# and win32 ONLY — there is no linux-x64 or linux-arm64 prebuild — so its
-# install script falls through to `node-gyp rebuild`:
+# which is a native addon. node-pty 1.2.0-beta.15 ships Linux x64 and arm64
+# binaries under `prebuilds/`. Its install script selects the matching binary,
+# with `node-gyp rebuild` as a fallback:
 #
 #     install: "node scripts/prebuild.js || node-gyp rebuild"
 #
@@ -115,14 +115,12 @@ RUN npm ci --omit=dev --prefix=/opt/pi-clis \
     && /opt/pi-clis/node_modules/.bin/codex --version | grep -q '0.162.1' \
     && rm -rf /tmp/npm-cache
 
-# node-gyp is allowed to fail silently in some npm configurations, and a
-# missing pty.node turns into a terminal that opens and immediately dies at
-# runtime. Assert the artifact exists and actually loads, here, where the
-# failure is a red build instead of a support ticket.
+# Validate the installed native module by loading it and checking its API.
+# Current node-pty packages store platform binaries under `prebuilds/`, not
+# `build/Release/pty.node`; checking that old node-gyp output path rejects a
+# valid prebuilt install.
 RUN set -euo pipefail; \
     PTY="/opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/node-pty"; \
-    test -f "${PTY}/build/Release/pty.node" \
-      || { echo "[build] FAIL: node-pty was not compiled for linux" >&2; exit 1; }; \
     node -e 'const p=require(process.argv[1]); if (typeof p.spawn !== "function") { throw new Error("node-pty loaded but has no spawn()"); } console.log("[build] node-pty OK");' "${PTY}"
 
 # Stop silent CJK path corruption. Upstream folds U+3000 and other Unicode
