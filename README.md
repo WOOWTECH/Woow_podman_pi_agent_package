@@ -2,7 +2,7 @@
 
 [![Podman](https://img.shields.io/badge/Podman-%E2%89%A54.4%20rootless-892CA0)](https://podman.io)
 [![Quadlet](https://img.shields.io/badge/units-Quadlet%20%2B%20systemd-orange)](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
-[![pi-web](https://img.shields.io/badge/pi--web-0.9.0-blue)](https://www.npmjs.com/package/@agegr/pi-web)
+[![pi-web](https://img.shields.io/badge/pi--web-0.12.0-blue)](https://www.npmjs.com/package/@agegr/pi-web)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **English** · [繁體中文](README_zh-TW.md)
@@ -14,7 +14,7 @@ of [`Woow_k3s_pi_agent_package`](https://github.com/WOOWTECH/Woow_k3s_pi_agent_p
 instead of a Kubernetes cluster.
 
 > **Read [Security posture](#security-posture) before you expose anything.**
-> Since pi-web 0.9.0 the UI contains a browser terminal. Whoever reaches
+> Since pi-web 0.12.0 the UI contains a browser terminal. Whoever reaches
 > `127.0.0.1:30141` gets a shell that is equivalent to the account running
 > the container, with that account's home directory mounted read-write.
 > This package ships **no authentication**: a same-host reverse proxy with
@@ -27,7 +27,7 @@ instead of a Kubernetes cluster.
 | | |
 |---|---|
 | **Loopback endpoint** | `http://127.0.0.1:30141` on the Podman host — unauthenticated, reverse-proxy-only |
-| **Agent** | `@earendil-works/pi-coding-agent` 0.85.1, imported as a library by pi-web 0.9.0 (no separate daemon) |
+| **Agent** | `@earendil-works/pi-coding-agent` 1.0.0, imported as a library by pi-web 0.12.0 (no separate daemon) |
 | **Browser terminal** | `/api/terminal` (node-pty, `SHELL=/bin/bash`) — a login shell inside the container |
 | **CLI** | `pi` on `PATH` inside the container — `podman exec -it pi-web pi` drives the TUI |
 | **Persistence** | one named volume, `pi-agent-data`, holding sessions, skills, config and `$HOME` |
@@ -55,6 +55,8 @@ What is **identical** on purpose: the `pi` launcher wrapper, the CJK path patch,
 ---
 
 ## Install
+**Image revision 0.12.0-r2** includes Claude Code 2.1.296 and Codex 0.162.1 and fixes ChatGPT OAuth installation identity. Users still complete account authorization themselves. Executables in the persistent home’s `.local/bin` take precedence.
+
 
 Requires rootless Podman ≥ 4.4 (Quadlet; tested with 4.9.3 on Ubuntu 24.04),
 run as the account that owns the containers. Never use `sudo`.
@@ -97,7 +99,7 @@ causes downtime.
 | `--no-start` | install the units and `daemon-reload`, but start or restart nothing |
 | `--dry-run` | render, validate and report what would change; touch nothing |
 
-The tag is `<pi-web version>-r<package revision>` (today `0.9.0-r1`) and is
+The tag is `<pi-web version>-r<package revision>` (today `0.12.0-r2`) and is
 pinned in `quadlet/pi-web.container`; `Pull=never`, because the images exist
 only on the host that built them. The base image is not published to any
 registry; publishing it to GHCR (so hosts can skip the base build) is future
@@ -177,7 +179,7 @@ cd Woow_podman_pi_agent_package && git pull
 
 The old files are copied to `~/.local/state/woow-quadlet/pi-agent/` (`replaced/`,
 `adopted/`) before they are overwritten. Mounts, environment, network, volume
-and port stay the same; only the image tag changes (`:latest` → `:0.9.0-r1`)
+and port stay the same; only the image tag changes (`:latest` → `:0.12.0-r2`)
 and the auto-update label goes. To roll back, copy the old files back and run
 `systemctl --user daemon-reload && systemctl --user restart pi-web.service`;
 the old `:latest` image is still there.
@@ -209,7 +211,7 @@ and rotating it does not mean editing a unit file and restarting.
 ## Layout
 
 ```
-Containerfile              debian:bookworm-slim + Node 22 + pi-web 0.9.0, multi-stage node-pty build
+Containerfile              debian:bookworm-slim + Node 22 + pi-web 0.12.0, multi-stage node-pty build
 Containerfile.host-control host-control layer (podman + systemd clients) on the local base
 config/pi-agent.env.example   per-host settings, installed to ~/.config/pi-agent/pi-agent.env
 quadlet/
