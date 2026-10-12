@@ -44,8 +44,10 @@ jobs:
 
       - name: Reject oversized image layers
         run: |
-          podman history --no-trunc --format json localhost/pi-agent:test > /tmp/pi-agent-history.json
-          node tests/assert-podman-layer-sizes.mjs /tmp/pi-agent-history.json
+          podman save --format oci-archive -o /tmp/pi-agent.oci localhost/pi-agent:test
+          mkdir -p /tmp/pi-agent-oci
+          tar -xf /tmp/pi-agent.oci -C /tmp/pi-agent-oci
+          node tests/assert-podman-layer-sizes.mjs /tmp/pi-agent-oci
 
       - name: Vendored quadlet-lib is unmodified
         run: sha256sum -c scripts/lib/quadlet-lib.manifest

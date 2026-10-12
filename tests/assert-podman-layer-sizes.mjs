@@ -1,34 +1,29 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 const path = process.argv[2];
 if (!path) {
-  console.error("usage: assert-podman-layer-sizes.mjs <podman-history.json>");
+  console.error("usage: assert-podman-layer-sizes.mjs <extracted-oci-layout>");
   process.exit(2);
 }
 
 const maxBytes = Number(process.env.PI_MAX_LAYER_BYTES ?? 256 * 1024 * 1024);
-const history = JSON.parse(readFileSync(path, "utf8"));
-assert.ok(Array.isArray(history) && history.length > 0, "expected podman history JSON array");
-
-function bytes(value) {
-  if (typeof value === "number") return value;
-  const match = String(value).trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*(B|kB|KB|MB|MiB|GB|GiB)$/i);
-  assert.ok(match, `unrecognized Podman layer size: ${value}`);
-  const units = { b: 1, kb: 1000, kib: 1024, mb: 1_000_000, mib: 1024 ** 2, gb: 1_000_000_000, gib: 1024 ** 3 };
-  return Number(match[1]) * units[match[2].toLowerCase()];
-}
-
-const layers = history.map((entry) => ({
-  command: entry.CreatedBy ?? entry.createdBy ?? entry.created_by ?? "<unknown>",
-  size: bytes(entry.Size ?? entry.size),
+const layout = JSON.parse(readFileSync(join(path, "index.json"), "utf8"));
+assert.ok(layout.manifests?.length, "expected OCI image layout index");
+const manifestDescriptor = layout.manifests[0];
+const manifest = JSON.parse(readFileSync(join(path, "blobs/sha256", manifestDescriptor.digest.split(":")[1]), "utf8"));
+const layers = manifest.layers.map((layer, index) => ({
+  index,
+  digest: layer.digest,
+  size: statSync(join(path, "blobs/sha256", layer.digest.split(":")[1])).size,
 }));
 const largest = Math.max(...layers.map((layer) => layer.size));
-console.log(`${layers.length} Podman layers; largest ${(largest / 1048576).toFixed(1)} MiB; limit ${(maxBytes / 1048576).toFixed(1)} MiB`);
+console.log(`${layers.length} compressed OCI layers; largest ${(largest / 1048576).toFixed(1)} MiB; limit ${(maxBytes / 1048576).toFixed(1)} MiB`);
 
 for (const layer of layers.filter(({ size }) => size > maxBytes)) {
-  console.error(`${(layer.size / 1048576).toFixed(1)} MiB: ${layer.command}`);
+  console.error(`layer ${layer.index} ${layer.digest} is ${(layer.size / 1048576).toFixed(1)} MiB`);
 }
-assert.ok(layers.every(({ size }) => size <= maxBytes), "image contains a layer above the transport-safe limit");
+assert.ok(layers.every(({ size }) => size <= maxBytes), "image contains a compressed OCI layer above the transport-safe limit");
