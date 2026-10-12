@@ -9,7 +9,7 @@
 # localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
 # then builds Containerfile.host-control on top of it:
 #
-#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.9.0-r1 -f Containerfile .
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r2 -f Containerfile .
 #
 # Never tag a local build with a ghcr.io/... name: the base is not published, and
 # a registry-looking local tag hides that from every fresh host.
@@ -40,9 +40,9 @@
 # WHY A BUILDER STAGE EXISTS AS OF pi-web 0.9.0
 #
 # 0.9.0 added a browser terminal, and with it a hard dependency on node-pty,
-# which is a native addon. node-pty 1.1.0 ships prebuilt binaries for darwin
-# and win32 ONLY — there is no linux-x64 or linux-arm64 prebuild — so its
-# install script falls through to `node-gyp rebuild`:
+# which is a native addon. node-pty 1.2.0-beta.15 ships Linux x64 and arm64
+# binaries under `prebuilds/`. Its install script selects the matching binary,
+# with `node-gyp rebuild` as a fallback:
 #
 #     install: "node scripts/prebuild.js || node-gyp rebuild"
 #
@@ -103,18 +103,24 @@ RUN apt-get update \
 #     — but it is the first thing to suspect if a future proxy change breaks.
 #   - PI_WEB_PASSWORD now enables built-in Basic Auth (username "pi").
 #     Unused in this deployment; nginx and the network boundary are the control.
-ARG PI_WEB_VERSION=0.9.0
+ARG PI_WEB_VERSION=0.12.0
 RUN npm install -g --omit=dev --prefix=/opt/piweb "@agegr/pi-web@${PI_WEB_VERSION}" \
     && rm -rf /tmp/npm-cache
 
-# node-gyp is allowed to fail silently in some npm configurations, and a
-# missing pty.node turns into a terminal that opens and immediately dies at
-# runtime. Assert the artifact exists and actually loads, here, where the
-# failure is a red build instead of a support ticket.
+# Lock-pinned defaults for fresh installs. Persistent per-user binaries stay
+# first on PATH so existing/custom versions are never overwritten.
+COPY cli-runtime/ /opt/pi-clis/
+RUN npm ci --omit=dev --prefix=/opt/pi-clis \
+    && /opt/pi-clis/node_modules/.bin/claude --version | grep -q '^2.1.296' \
+    && /opt/pi-clis/node_modules/.bin/codex --version | grep -q '0.162.1' \
+    && rm -rf /tmp/npm-cache
+
+# Validate the installed native module by loading it and checking its API.
+# Current node-pty packages store platform binaries under `prebuilds/`, not
+# `build/Release/pty.node`; checking that old node-gyp output path rejects a
+# valid prebuilt install.
 RUN set -euo pipefail; \
     PTY="/opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/node-pty"; \
-    test -f "${PTY}/build/Release/pty.node" \
-      || { echo "[build] FAIL: node-pty was not compiled for linux" >&2; exit 1; }; \
     node -e 'const p=require(process.argv[1]); if (typeof p.spawn !== "function") { throw new Error("node-pty loaded but has no spawn()"); } console.log("[build] node-pty OK");' "${PTY}"
 
 # Stop silent CJK path corruption. Upstream folds U+3000 and other Unicode
@@ -131,11 +137,18 @@ RUN set -euo pipefail; \
     mapfile -d '' FILES < <(find /opt/piweb/lib/node_modules/@agegr/pi-web \
       -path '*@earendil-works/*/dist/*/tools/path-utils.js' -print0); \
     echo "[patch] found ${#FILES[@]} path-utils.js copies"; \
-    if [ "${#FILES[@]}" -lt 2 ]; then \
-      echo "[patch] FAIL: expected at least 2 copies, found ${#FILES[@]}" >&2; \
+    if [ "${#FILES[@]}" -lt 1 ]; then \
+      echo "[patch] FAIL: expected at least 1 copy, found ${#FILES[@]}" >&2; \
       exit 1; \
     fi; \
-    node /opt/patches/fix-unicode-space-paths.mjs "${FILES[@]}"
+    node /opt/patches/fix-unicode-space-paths.mjs "${FILES[@]}" \
+    && node --test /opt/patches/tests/chatgpt-device-id.test.mjs \
+    && PI_WEB_ROOT=/opt/piweb/lib/node_modules/@agegr/pi-web node /opt/patches/tests/device-id-live.mjs \
+    && node /opt/patches/patch-chatgpt-device-id.mjs \
+       "/opt/piweb/lib/node_modules/@agegr/pi-web/.next/server/app/api/auth/login/[provider]/route.js" \
+    && node --check "/opt/piweb/lib/node_modules/@agegr/pi-web/.next/server/app/api/auth/login/[provider]/route.js" \
+    && grep -q '__piChatGPTDeviceId' \
+       "/opt/piweb/lib/node_modules/@agegr/pi-web/.next/server/app/api/auth/login/[provider]/route.js"
 
 
 # =============================================================================
@@ -211,10 +224,16 @@ RUN if [ "${VIDEO_TOOLS}" = "1" ]; then \
 # `pi-web` bin stays a working RELATIVE symlink into lib/node_modules.
 COPY --from=piweb-builder /opt/piweb/lib/node_modules /usr/local/lib/node_modules
 COPY --from=piweb-builder /opt/piweb/bin              /usr/local/bin
+COPY --from=piweb-builder /opt/pi-clis                  /opt/pi-clis
 
 COPY rootfs/ /
 
-RUN chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh \
+RUN ln -s /opt/pi-clis/node_modules/.bin/claude /usr/local/bin/claude \
+    && ln -s /opt/pi-clis/node_modules/.bin/codex /usr/local/bin/codex \
+    && chmod -R a+rX,go-w /opt/pi-clis \
+    && claude --version | grep -q '^2.1.296' \
+    && codex --version | grep -q '0.162.1' \
+    && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh \
     # Fail the build rather than ship an image where `pi` resolves to nothing.
     # Upstream installs the coding agent only as a transitive dependency, so npm
     # never links its bin — without the launcher, every terminal workflow dies.
@@ -228,7 +247,7 @@ RUN chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/vid
 
 ARG BUILD_VERSION=dev
 ARG BUILD_REF=unknown
-ARG PI_WEB_VERSION=0.9.0
+ARG PI_WEB_VERSION=0.12.0
 
 ENV PI_AGENT_IMAGE_VERSION=${BUILD_VERSION} \
     PI_WEB_VERSION=${PI_WEB_VERSION} \

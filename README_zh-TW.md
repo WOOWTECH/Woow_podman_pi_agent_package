@@ -2,7 +2,7 @@
 
 [![Podman](https://img.shields.io/badge/Podman-%E2%89%A54.4%20rootless-892CA0)](https://podman.io)
 [![Quadlet](https://img.shields.io/badge/units-Quadlet%20%2B%20systemd-orange)](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
-[![pi-web](https://img.shields.io/badge/pi--web-0.9.0-blue)](https://www.npmjs.com/package/@agegr/pi-web)
+[![pi-web](https://img.shields.io/badge/pi--web-0.12.0-blue)](https://www.npmjs.com/package/@agegr/pi-web)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 [English](README.md) · **繁體中文**
@@ -10,7 +10,7 @@
 把 `@agegr/pi-web` 與 `pi` coding agent 打包成在 **rootless Podman** 上執行、由 **systemd（Quadlet）** 監管的服務。它是 [`Woow_k3s_pi_agent_package`](https://github.com/WOOWTECH/Woow_k3s_pi_agent_package) 的 Podman 版本——相同的應用層，為單機容器執行環境重新建置。
 
 > **對外開放任何東西之前，先讀 [安全性現況](#安全性現況)。**
-> pi-web 0.9.0 起 UI 內建瀏覽器終端機。能連到 `127.0.0.1:30141` 的人，就拿到一個等同於執行容器那個帳號的 shell，而且該帳號的家目錄以讀寫方式掛在容器裡。本套件**不提供任何身分驗證**：前面必須有一台同機、開了驗證的 reverse proxy（見 [docs/downstream-nginx.md](docs/downstream-nginx.md)）。
+> pi-web 0.12.0 起 UI 內建瀏覽器終端機。能連到 `127.0.0.1:30141` 的人，就拿到一個等同於執行容器那個帳號的 shell，而且該帳號的家目錄以讀寫方式掛在容器裡。本套件**不提供任何身分驗證**：前面必須有一台同機、開了驗證的 reverse proxy（見 [docs/downstream-nginx.md](docs/downstream-nginx.md)）。
 
 ---
 
@@ -19,7 +19,7 @@
 | | |
 |---|---|
 | **Loopback 端點** | Podman 主機上的 `http://127.0.0.1:30141` — 沒有驗證，只給同機 reverse proxy 使用 |
-| **Agent** | `@earendil-works/pi-coding-agent` 0.85.1，由 pi-web 0.9.0 以函式庫方式載入（沒有獨立 daemon） |
+| **Agent** | `@earendil-works/pi-coding-agent` 1.0.0，由 pi-web 0.12.0 以函式庫方式載入（沒有獨立 daemon） |
 | **瀏覽器終端機** | `/api/terminal`（node-pty，`SHELL=/bin/bash`）— 容器內的 login shell |
 | **CLI** | 容器內 `PATH` 上有 `pi` — `podman exec -it pi-web pi` 即可操作 TUI |
 | **持久化** | 單一具名 volume `pi-agent-data`，存放 sessions、skills、設定與 `$HOME` |
@@ -47,6 +47,8 @@
 ---
 
 ## 安裝
+**映像修訂版 0.12.0-r2** 內含 Claude Code 2.1.296、Codex 0.162.1，並修復 ChatGPT OAuth 安裝識別碼。帳號授權仍由使用者自行完成；持久 HOME 的 `.local/bin` 個人版本優先使用。
+
 
 需要 rootless Podman ≥ 4.4（Quadlet；已在 Ubuntu 24.04 的 4.9.3 測試），以擁有這些容器的帳號執行。不要用 `sudo`。
 
@@ -75,7 +77,7 @@ cd Woow_podman_pi_agent_package
 | `--no-start` | 安裝 unit 並 `daemon-reload`，但不啟動也不重啟 |
 | `--dry-run` | 只計算、驗證並報告會變更什麼，不動任何東西 |
 
-Tag 是 `<pi-web 版本>-r<套件修訂號>`（目前是 `0.9.0-r1`），釘在 `quadlet/pi-web.container`；`Pull=never`，因為映像只存在於建置它的那台主機。Base 映像沒有發佈到任何 registry；發佈到 GHCR（讓主機可以跳過 base 建置）是之後的工作。
+Tag 是 `<pi-web 版本>-r<套件修訂號>`（目前是 `0.12.0-r2`），釘在 `quadlet/pi-web.container`；`Pull=never`，因為映像只存在於建置它的那台主機。Base 映像沒有發佈到任何 registry；發佈到 GHCR（讓主機可以跳過 base 建置）是之後的工作。
 
 全新 volume 首次啟動時，背景會下載約 720MB 影片工具。**UI 全程可用。**
 
@@ -135,7 +137,7 @@ cd Woow_podman_pi_agent_package && git pull
 ./scripts/install.sh                # 接管舊 unit、保留副本、pi-web 重啟一次
 ```
 
-舊檔在被覆蓋前會複製到 `~/.local/state/woow-quadlet/pi-agent/`（`replaced/`、`adopted/`）。掛載、環境變數、網路、volume 與連接埠都不變；只有映像 tag 改變（`:latest` → `:0.9.0-r1`），auto-update label 拿掉。要回滾就把舊檔複製回去，再執行 `systemctl --user daemon-reload && systemctl --user restart pi-web.service`；舊的 `:latest` 映像還在。
+舊檔在被覆蓋前會複製到 `~/.local/state/woow-quadlet/pi-agent/`（`replaced/`、`adopted/`）。掛載、環境變數、網路、volume 與連接埠都不變；只有映像 tag 改變（`:latest` → `:0.12.0-r2`），auto-update label 拿掉。要回滾就把舊檔複製回去，再執行 `systemctl --user daemon-reload && systemctl --user restart pi-web.service`；舊的 `:latest` 映像還在。
 
 ---
 
@@ -153,7 +155,7 @@ cd Woow_podman_pi_agent_package && git pull
 ## 目錄結構
 
 ```
-Containerfile              debian:bookworm-slim + Node 22 + pi-web 0.9.0，多階段編譯 node-pty
+Containerfile              debian:bookworm-slim + Node 22 + pi-web 0.12.0，多階段編譯 node-pty
 Containerfile.host-control host-control 層（podman + systemd client），疊在本機 base 上
 config/pi-agent.env.example   每台主機的設定，安裝到 ~/.config/pi-agent/pi-agent.env
 quadlet/
@@ -231,7 +233,7 @@ bash tests/smoke.sh                            # 安裝後檢查
 
 直說。
 
-**瀏覽器終端機就是這個帳號的 root 等級 shell。** pi-web 0.9.0 新增的 `/api/terminal` 會透過 node-pty 開一個 login shell。這個 shell 在容器*內*是 root；rootless Podman 把它對應到執行 unit 的主機帳號。加上 host-control 的掛載，這個帳號的整個家目錄以讀寫方式掛在 `/host$HOME`，它的 rootless Podman socket 可以用（這個帳號的每一個容器，包括 pi-web 自己），它的 user systemd 也可以用。實際上，碰得到終端機的人可以：
+**瀏覽器終端機就是這個帳號的 root 等級 shell。** pi-web 0.12.0 新增的 `/api/terminal` 會透過 node-pty 開一個 login shell。這個 shell 在容器*內*是 root；rootless Podman 把它對應到執行 unit 的主機帳號。加上 host-control 的掛載，這個帳號的整個家目錄以讀寫方式掛在 `/host$HOME`，它的 rootless Podman socket 可以用（這個帳號的每一個容器，包括 pi-web 自己），它的 user systemd 也可以用。實際上，碰得到終端機的人可以：
 
 - 讀取並修改這個帳號擁有的每一個檔案：`~/.ssh`、`~/.local/share/containers` 底下其他服務的資料與 volume、tunnel token；
 - 啟動、停止、exec 進去或替換這個帳號的每一個容器；

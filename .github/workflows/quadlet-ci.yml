@@ -1,5 +1,5 @@
 # .github/workflows/quadlet-ci.yml: vendored by Woow_quadlet_migration_plan/lib/sync-lib.sh.
-# Static checks only: no container is started. Repo-specific jobs belong in a separate workflow.
+# Static checks plus the pi-web builder stage; image-build checks cover OAuth and CLI binaries.
 name: quadlet-ci
 
 on:
@@ -16,6 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test ChatGPT OAuth device-id patch
+        run: |
+          node --test patches/tests/chatgpt-device-id.test.mjs
+          node --check patches/patch-chatgpt-device-id.mjs
+
       - name: Install podman and shellcheck
         run: |
           sudo apt-get update
@@ -23,6 +32,9 @@ jobs:
           podman --version
           /usr/libexec/podman/quadlet -version
           shellcheck --version | sed -n 2p
+
+      - name: Build pi-web stage and verify SDK OAuth behavior
+        run: podman build --target piweb-builder --format=docker -f Containerfile .
 
       - name: Vendored quadlet-lib is unmodified
         run: sha256sum -c scripts/lib/quadlet-lib.manifest
