@@ -8,7 +8,7 @@
 # base has never been published to GHCR (publishing is future work).
 #
 # BUILD WITH --format=docker, like the base: see the note in ./Containerfile.
-ARG BASE_IMAGE=localhost/woow-podman-pi-agent:0.12.0-r2
+ARG BASE_IMAGE=localhost/woow-podman-pi-agent:0.12.0-r3
 FROM ${BASE_IMAGE}
 
 USER root
