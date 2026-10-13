@@ -252,7 +252,7 @@ RUN ln -s /opt/pi-clis/claude/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/pi-clis/codex/node_modules/.bin/codex /usr/local/bin/codex \
     && claude --version | grep -q '^2.1.296' \
     && codex --version | grep -q '0.162.1' \
-    && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh \
+    && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh /usr/local/bin/pi-agent-share-state.mjs \
     # Fail the build rather than ship an image where `pi` resolves to nothing.
     # Upstream installs the coding agent only as a transitive dependency, so npm
     # never links its bin — without the launcher, every terminal workflow dies.

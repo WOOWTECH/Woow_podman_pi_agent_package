@@ -25,6 +25,7 @@ DATA_DIR="${PI_AGENT_DATA_DIR:-/data/pi-agent}"
 log() { printf '[pi-web] %s\n' "$*"; }
 
 mkdir -p "${DATA_DIR}/sessions" "${DATA_DIR}/home" "${DATA_DIR}/skills" "${DATA_DIR}/rclone"
+PI_AGENT_DATA_DIR="${DATA_DIR}" node /usr/local/bin/pi-agent-share-state.mjs
 
 # --- Credential file modes ----------------------------------------------------
 # A repair pass, not the guarantee: umask above is what keeps newly created
