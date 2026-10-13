@@ -9,7 +9,7 @@
 # localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
 # then builds Containerfile.host-control on top of it:
 #
-#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r3 -f Containerfile .
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r4 -f Containerfile .
 #
 # Never tag a local build with a ghcr.io/... name: the base is not published, and
 # a registry-looking local tag hides that from every fresh host.
@@ -106,6 +106,21 @@ RUN apt-get update \
 ARG PI_WEB_VERSION=0.12.0
 RUN npm install -g --omit=dev --prefix=/opt/piweb "@agegr/pi-web@${PI_WEB_VERSION}" \
     && rm -rf /tmp/npm-cache
+
+# pi-coding-agent 1.1.0 imports MCP_TYPESCRIPT_PREAMBLE, but its ^1.1.0 range
+# currently resolves pi-codemode 1.2.0, which removed that export. Keep the
+# compatible runtime as a nested dependency until upstream publishes aligned
+# pi-coding-agent/codemode releases; do not let a fresh registry resolution
+# break image builds for the same pinned pi-web version.
+RUN set -euo pipefail; \
+    PIN_DIR=/tmp/pi-codemode-pin; \
+    AGENT_DIR=/opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent; \
+    mkdir -p "${PIN_DIR}" "${AGENT_DIR}/node_modules/@earendil-works/pi-codemode"; \
+    PACKAGE="$(cd "${PIN_DIR}" && npm pack --silent @earendil-works/pi-codemode@1.1.0)"; \
+    tar -xzf "${PIN_DIR}/${PACKAGE}" --strip-components=1 -C "${AGENT_DIR}/node_modules/@earendil-works/pi-codemode"; \
+    cd "${AGENT_DIR}"; \
+    node --input-type=module -e 'import { MCP_TYPESCRIPT_PREAMBLE } from "@earendil-works/pi-codemode/declarations"; if (typeof MCP_TYPESCRIPT_PREAMBLE !== "string") process.exit(1); console.log("[build] pi-codemode MCP declarations pinned compatibly");'; \
+    rm -rf /tmp/npm-cache /tmp/pi-codemode-pin
 
 # Lock-pinned defaults for fresh installs. Keep each CLI in a separate image
 # layer; the combined install produced a 377 MiB blob that failed on a slow
@@ -252,7 +267,7 @@ RUN ln -s /opt/pi-clis/claude/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/pi-clis/codex/node_modules/.bin/codex /usr/local/bin/codex \
     && claude --version | grep -q '^2.1.296' \
     && codex --version | grep -q '0.162.1' \
-    && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh \
+    && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh /usr/local/bin/pi-agent-share-state.mjs \
     # Fail the build rather than ship an image where `pi` resolves to nothing.
     # Upstream installs the coding agent only as a transitive dependency, so npm
     # never links its bin — without the launcher, every terminal workflow dies.
