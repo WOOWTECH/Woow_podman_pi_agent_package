@@ -112,12 +112,15 @@ RUN npm install -g --omit=dev --prefix=/opt/piweb "@agegr/pi-web@${PI_WEB_VERSIO
 # compatible runtime as a nested dependency until upstream publishes aligned
 # pi-coding-agent/codemode releases; do not let a fresh registry resolution
 # break image builds for the same pinned pi-web version.
-RUN npm install --no-save --no-package-lock \
-      --prefix=/opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent \
-      @earendil-works/pi-codemode@1.1.0 \
-    && cd /opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent \
-    && node --input-type=module -e 'import { MCP_TYPESCRIPT_PREAMBLE } from "@earendil-works/pi-codemode/declarations"; if (typeof MCP_TYPESCRIPT_PREAMBLE !== "string") process.exit(1); console.log("[build] pi-codemode MCP declarations pinned compatibly");' \
-    && rm -rf /tmp/npm-cache
+RUN set -euo pipefail; \
+    PIN_DIR=/tmp/pi-codemode-pin; \
+    AGENT_DIR=/opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent; \
+    mkdir -p "${PIN_DIR}" "${AGENT_DIR}/node_modules/@earendil-works/pi-codemode"; \
+    PACKAGE="$(cd "${PIN_DIR}" && npm pack --silent @earendil-works/pi-codemode@1.1.0)"; \
+    tar -xzf "${PIN_DIR}/${PACKAGE}" --strip-components=1 -C "${AGENT_DIR}/node_modules/@earendil-works/pi-codemode"; \
+    cd "${AGENT_DIR}"; \
+    node --input-type=module -e 'import { MCP_TYPESCRIPT_PREAMBLE } from "@earendil-works/pi-codemode/declarations"; if (typeof MCP_TYPESCRIPT_PREAMBLE !== "string") process.exit(1); console.log("[build] pi-codemode MCP declarations pinned compatibly");'; \
+    rm -rf /tmp/npm-cache /tmp/pi-codemode-pin
 
 # Lock-pinned defaults for fresh installs. Keep each CLI in a separate image
 # layer; the combined install produced a 377 MiB blob that failed on a slow
