@@ -107,6 +107,18 @@ ARG PI_WEB_VERSION=0.12.0
 RUN npm install -g --omit=dev --prefix=/opt/piweb "@agegr/pi-web@${PI_WEB_VERSION}" \
     && rm -rf /tmp/npm-cache
 
+# pi-coding-agent 1.1.0 imports MCP_TYPESCRIPT_PREAMBLE, but its ^1.1.0 range
+# currently resolves pi-codemode 1.2.0, which removed that export. Keep the
+# compatible runtime as a nested dependency until upstream publishes aligned
+# pi-coding-agent/codemode releases; do not let a fresh registry resolution
+# break image builds for the same pinned pi-web version.
+RUN npm install --no-save --no-package-lock \
+      --prefix=/opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent \
+      @earendil-works/pi-codemode@1.1.0 \
+    && cd /opt/piweb/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent \
+    && node --input-type=module -e 'import { MCP_TYPESCRIPT_PREAMBLE } from "@earendil-works/pi-codemode/declarations"; if (typeof MCP_TYPESCRIPT_PREAMBLE !== "string") process.exit(1); console.log("[build] pi-codemode MCP declarations pinned compatibly");' \
+    && rm -rf /tmp/npm-cache
+
 # Lock-pinned defaults for fresh installs. Keep each CLI in a separate image
 # layer; the combined install produced a 377 MiB blob that failed on a slow
 # production pull. Persistent user binaries still take precedence at runtime.

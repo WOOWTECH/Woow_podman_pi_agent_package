@@ -24,4 +24,5 @@ for (const [name, spec] of Object.entries(expected)) {
 
 assert.doesNotMatch(text, /COPY cli-runtime\/\s+\/opt\/pi-clis\//, "combined CLI builder copy is forbidden");
 assert.doesNotMatch(text, /COPY --from=piweb-builder \/opt\/pi-clis\s+\/opt\/pi-clis$/, "combined CLI final copy is forbidden");
+assert.match(text, /@earendil-works\/pi-codemode@1\.1\.0/, "pi-codemode stays on the API-compatible version used by pi-coding-agent");
 console.log("Claude Code and Codex have pinned, separate builder and runtime image layers.");
