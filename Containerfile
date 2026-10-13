@@ -9,7 +9,7 @@
 # localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
 # then builds Containerfile.host-control on top of it:
 #
-#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r3 -f Containerfile .
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r4 -f Containerfile .
 #
 # Never tag a local build with a ghcr.io/... name: the base is not published, and
 # a registry-looking local tag hides that from every fresh host.

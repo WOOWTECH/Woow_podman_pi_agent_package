@@ -46,7 +46,7 @@ ContainerName=pi-web
 # revision>, plus "-slim" when PI_VIDEO_TOOLS=false. Bump the revision whenever
 # either Containerfile, rootfs/ or patches/ changes. The image is in no
 # registry, so Pull=never.
-Image=localhost/woow-podman-pi-agent-host:0.12.0-r3@@PI_IMAGE_VARIANT@@
+Image=localhost/woow-podman-pi-agent-host:0.12.0-r4@@PI_IMAGE_VARIANT@@
 Pull=never
 
 Network=pi-agent.network
