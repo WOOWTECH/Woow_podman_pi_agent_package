@@ -17,6 +17,7 @@ EOF
 # command form used by a login shell in the image.
 sed "s|/usr/local/bin/pi-agent-env.sh|${ENV_FILE}|g" "${PROFILE}" >"${PROFILE_COPY}"
 
+# shellcheck disable=SC2016 # expanded by the dash child, not by this bash
 if ! output="$(dash -c '. "$1"; test "${PI_AGENT_PROFILE_TEST:-}" = loaded' sh "${PROFILE_COPY}" 2>&1)"; then
   printf 'POSIX profile loading failed:\n%s\n' "${output}" >&2
   exit 1
