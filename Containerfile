@@ -9,7 +9,7 @@
 # localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
 # then builds Containerfile.host-control on top of it:
 #
-#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r5 -f Containerfile .
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r6 -f Containerfile .
 #
 # Never tag a local build with a ghcr.io/... name: the base is not published, and
 # a registry-looking local tag hides that from every fresh host.
@@ -264,11 +264,15 @@ COPY --from=piweb-builder /opt/pi-clis/codex /opt/pi-clis/codex
 
 COPY rootfs/ /
 
-RUN ln -s /opt/pi-clis/claude/node_modules/.bin/claude /usr/local/bin/claude \
-    && ln -s /opt/pi-clis/codex/node_modules/.bin/codex /usr/local/bin/codex \
-    && claude --version | grep -q '^2.1.296' \
-    && codex --version | grep -q '0.162.1' \
-    && chmod +x /usr/local/bin/pi /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh /usr/local/bin/pi-agent-share-state.mjs \
+# /usr/local/bin/claude and /usr/local/bin/codex are wrappers from rootfs that
+# refresh the shared Pi Web MCP/skills state and then exec these pinned
+# binaries. Check the binaries directly: running a wrapper here would write
+# shared state into the image.
+RUN /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296' \
+    && /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1' \
+    && chmod +x /usr/local/bin/pi /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh /usr/local/bin/pi-agent-share-state.mjs \
+    && sh -n /usr/local/bin/claude \
+    && sh -n /usr/local/bin/codex \
     # Fail the build rather than ship an image where `pi` resolves to nothing.
     # Upstream installs the coding agent only as a transitive dependency, so npm
     # never links its bin — without the launcher, every terminal workflow dies.
