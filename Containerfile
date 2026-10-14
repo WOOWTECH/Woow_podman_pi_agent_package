@@ -178,9 +178,10 @@ RUN set -euo pipefail; \
 # =============================================================================
 FROM debian:bookworm-slim
 
+# Runtime npm installs (Pi Web package management) run as pi; keep the cache in the writable persistent home, not root-owned /tmp.
 ENV LANG=C.UTF-8 \
     NODE_ENV=production \
-    npm_config_cache=/tmp/npm-cache \
+    npm_config_cache=/data/pi-agent/home/.cache/npm \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     PI_TELEMETRY=0 \
     PI_SKIP_VERSION_CHECK=1 \
