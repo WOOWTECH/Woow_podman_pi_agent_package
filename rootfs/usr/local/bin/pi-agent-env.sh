@@ -21,6 +21,14 @@ export PI_CODING_AGENT_DIR="${PI_AGENT_DATA_DIR}"
 # The agent creates per-session worktrees under $HOME/pi-cwd-*. Same reasoning.
 export HOME="${PI_AGENT_DATA_DIR}/home"
 
+# The Quadlet unit puts $HOME/.local/bin first for the pi-web service. The
+# browser terminal is a login shell, so /etc/profile rebuilds PATH and drops
+# it; put it back so user-local CLIs keep the precedence the README promises.
+case ":${PATH}:" in
+    *":${HOME}/.local/bin:"*) ;;
+    *) export PATH="${HOME}/.local/bin:${PATH}" ;;
+esac
+
 export PI_TELEMETRY="${PI_TELEMETRY:-0}"
 export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}"
 

@@ -28,6 +28,12 @@ jobs:
       - name: Verify shared Skills and global MCP scope
         run: node tests/shared-agent-state.mjs
 
+      - name: Verify CLI wrappers share Pi Web MCP from any PATH
+        run: node tests/cli-wrappers.mjs
+
+      - name: Verify the login profile loads in POSIX shells
+        run: bash tests/test-profile-posix.sh
+
       - name: Install podman and shellcheck
         run: |
           sudo apt-get update
