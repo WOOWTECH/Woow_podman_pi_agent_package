@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const data = process.env.PI_AGENT_DATA_DIR || process.env.PI_CODING_AGENT_DIR || "/data/pi-agent";
@@ -12,7 +12,7 @@ const manifest = path.join(data, "mcp.json");
 const marker = "# BEGIN pi-agent shared MCP (managed)";
 const endMarker = "# END pi-agent shared MCP (managed)";
 const managedList = path.join(data, ".shared-mcp-managed.json");
-const pluginSkillLinks = path.join(data, ".shared-plugin-skills.json");
+const previousSkillLinks = path.join(data, ".shared-plugin-skills.json");
 
 function ensureDir(dir) { mkdirSync(dir, { recursive: true, mode: 0o700 }); }
 function atomicWrite(file, contents) {
@@ -63,42 +63,18 @@ ensureDir(data); ensureDir(home); ensureDir(skills); ensureDir(workspace); ensur
 if (!existsSync(manifest)) atomicWrite(manifest, `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`);
 const parsed = JSON.parse(readFileSync(manifest, "utf8"));
 if (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Array.isArray(parsed.mcpServers)) throw new Error(`${manifest} must contain an mcpServers object`);
-const servers = {};
-const activeSkillLinks = {};
-const pluginRoot = path.join(data, "plugins");
-ensureDir(pluginRoot);
-for (const pluginId of readdirSync(pluginRoot).sort()) {
-  if (pluginId === "pi") continue;
-  const pluginDir = path.join(pluginRoot, pluginId);
-  if (!lstatSync(pluginDir).isDirectory()) continue;
-  const pluginManifest = path.join(pluginDir, "plugin.json");
-  if (!existsSync(pluginManifest)) continue;
-  const plugin = JSON.parse(readFileSync(pluginManifest, "utf8"));
-  for (const relative of plugin.skills || []) {
-    const source = path.resolve(pluginDir, relative);
-    if (!source.startsWith(`${pluginDir}${path.sep}`) || !existsSync(path.join(source, "SKILL.md"))) throw new Error(`Invalid plugin skill path: ${pluginId}/${relative}`);
-    const skillName = path.basename(source);
-    const destination = path.join(skills, skillName);
-    if (existsSync(destination) && !lstatSync(destination).isSymbolicLink()) throw new Error(`Portable plugin skill collides with existing skill: ${skillName}`);
-    if (existsSync(destination) && path.resolve(path.dirname(destination), readlinkSync(destination)) !== source) throw new Error(`Portable plugin skill name collision: ${skillName}`);
-    if (!existsSync(destination)) symlinkSync(source, destination, "dir");
-    activeSkillLinks[skillName] = source;
-  }
-  for (const [name, server] of Object.entries(plugin.mcpServers || {})) {
-    if (servers[name]) throw new Error(`Portable plugins define duplicate MCP server: ${name}`);
-    servers[name] = server;
-  }
-}
-const oldSkillLinks = existsSync(pluginSkillLinks) ? JSON.parse(readFileSync(pluginSkillLinks, "utf8")) : [];
+// Pi plugins/extensions are Pi-specific code, so only Pi Web-installed skills
+// and explicitly configured global MCP servers are shared with Claude/Codex.
+// Remove links created by older releases that imported portable plugin skills.
+const oldSkillLinks = existsSync(previousSkillLinks) ? JSON.parse(readFileSync(previousSkillLinks, "utf8")) : [];
 for (const [skillName, oldTarget] of Object.entries(Array.isArray(oldSkillLinks) ? Object.fromEntries(oldSkillLinks.map((name) => [name, ""])) : oldSkillLinks)) {
-  if (activeSkillLinks[skillName]) continue;
   const destination = path.join(skills, skillName);
   try {
     if (lstatSync(destination).isSymbolicLink() && (!oldTarget || path.resolve(path.dirname(destination), readlinkSync(destination)) === oldTarget)) rmSync(destination);
   } catch (error) { if (error.code !== "ENOENT") throw error; }
 }
-atomicWrite(pluginSkillLinks, `${JSON.stringify(activeSkillLinks)}\n`);
-Object.assign(servers, parsed.mcpServers);
+if (existsSync(previousSkillLinks)) rmSync(previousSkillLinks);
+const servers = parsed.mcpServers;
 
 for (const target of [path.join(home, ".pi/agent/skills"), path.join(home, ".claude/skills"), path.join(home, ".agents/skills")]) linkDir(skills, target);
 linkDir(piExtensions, path.join(home, ".pi/agent/extensions"));

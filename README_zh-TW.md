@@ -47,7 +47,7 @@
 ---
 
 ## 安裝
-**映像修訂版 0.12.0-r2** 內含 Claude Code 2.1.296、Codex 0.162.1，並修復 ChatGPT OAuth 安裝識別碼。帳號授權仍由使用者自行完成；持久 HOME 的 `.local/bin` 個人版本優先使用。
+**映像修訂版 0.12.0-r5** 內含 Claude Code 2.1.296、Codex 0.162.1，並修復 ChatGPT OAuth 安裝識別碼。Pi Web 安裝的 skills、全域 MCP 與工作區檔案會供 Pi、Claude Code、Codex 共用；Pi plugin／extension 保持只由 Pi 使用。帳號授權仍由使用者自行完成；持久 HOME 的 `.local/bin` 個人版本優先使用。
 
 
 需要 rootless Podman ≥ 4.4（Quadlet；已在 Ubuntu 24.04 的 4.9.3 測試），以擁有這些容器的帳號執行。不要用 `sudo`。
@@ -77,7 +77,7 @@ cd Woow_podman_pi_agent_package
 | `--no-start` | 安裝 unit 並 `daemon-reload`，但不啟動也不重啟 |
 | `--dry-run` | 只計算、驗證並報告會變更什麼，不動任何東西 |
 
-Tag 是 `<pi-web 版本>-r<套件修訂號>`（目前是 `0.12.0-r2`），釘在 `quadlet/pi-web.container`；`Pull=never`，因為映像只存在於建置它的那台主機。Base 映像沒有發佈到任何 registry；發佈到 GHCR（讓主機可以跳過 base 建置）是之後的工作。
+Tag 是 `<pi-web 版本>-r<套件修訂號>`（目前是 `0.12.0-r5`），釘在 `quadlet/pi-web.container`；`Pull=never`，因為映像只存在於建置它的那台主機。Base 映像沒有發佈到任何 registry；發佈到 GHCR（讓主機可以跳過 base 建置）是之後的工作。
 
 全新 volume 首次啟動時，背景會下載約 720MB 影片工具。**UI 全程可用。**
 
@@ -137,7 +137,7 @@ cd Woow_podman_pi_agent_package && git pull
 ./scripts/install.sh                # 接管舊 unit、保留副本、pi-web 重啟一次
 ```
 
-舊檔在被覆蓋前會複製到 `~/.local/state/woow-quadlet/pi-agent/`（`replaced/`、`adopted/`）。掛載、環境變數、網路、volume 與連接埠都不變；只有映像 tag 改變（`:latest` → `:0.12.0-r2`），auto-update label 拿掉。要回滾就把舊檔複製回去，再執行 `systemctl --user daemon-reload && systemctl --user restart pi-web.service`；舊的 `:latest` 映像還在。
+舊檔在被覆蓋前會複製到 `~/.local/state/woow-quadlet/pi-agent/`（`replaced/`、`adopted/`）。掛載、環境變數、網路、volume 與連接埠都不變；只有映像 tag 改變（`:latest` → `:0.12.0-r5`），auto-update label 拿掉。要回滾就把舊檔複製回去，再執行 `systemctl --user daemon-reload && systemctl --user restart pi-web.service`；舊的 `:latest` 映像還在。
 
 ---
 

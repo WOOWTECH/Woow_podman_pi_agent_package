@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.0-r5
+
+- Share only Pi Web-installed skills and global MCP servers with Claude Code and Codex.
+- Stop importing portable Pi plugin skills and MCP servers; remove links left by earlier releases.
+
 ## 0.12.0-r2
 
 - Upgrade pi-web to 0.12.0, including the upstream pre-0.11 password-bypass security fix and Pi 1.0/MCP support.

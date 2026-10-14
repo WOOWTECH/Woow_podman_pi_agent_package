@@ -25,6 +25,9 @@ jobs:
           node --test patches/tests/chatgpt-device-id.test.mjs
           node --check patches/patch-chatgpt-device-id.mjs
 
+      - name: Verify shared Skills and global MCP scope
+        run: node tests/shared-agent-state.mjs
+
       - name: Install podman and shellcheck
         run: |
           sudo apt-get update
