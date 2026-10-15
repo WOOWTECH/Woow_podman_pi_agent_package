@@ -109,7 +109,8 @@ jobs:
           run sh -c 'HOME=$(mktemp -d) omni --version' | grep -q '^omnigent 0.12.0'
           run pi --version
           run tmux -V
-          run podman --version
+          # The quadlet mounts the volume that holds HOME; here it is an empty anonymous one.
+          run sh -c 'HOME=/tmp podman --version'
           run systemctl --version | head -n1
 
       # The image is public: account state, keys and Omnigent registrations come from the
