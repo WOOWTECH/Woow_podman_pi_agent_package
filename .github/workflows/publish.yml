@@ -125,7 +125,11 @@ jobs:
             found=$(find /root /home /data /tmp /var/tmp -mindepth 1 \
               \( -name .omnigent -o -name .claude -o -name .claude.json -o -name .codex \
                  -o -name .pi -o -name auth.json -o -name ".credentials*" -o -name "*.pem" -o -name "*.key" \) 2>/dev/null)
-            if [ -n "$found" ]; then echo "state in the image:" >&2; echo "$found" >&2; exit 1; fi
+            if [ -n "$found" ]; then
+              echo "state in the image:" >&2
+              for f in $found; do ls -laR "$f" >&2; done
+              exit 1
+            fi
           '
 
       - name: pi-web starts and answers on 30141

@@ -294,29 +294,30 @@ COPY rootfs/ /
 # /usr/local/bin/claude and /usr/local/bin/codex are wrappers from rootfs that
 # refresh the shared Pi Web MCP/skills state and then exec these pinned
 # binaries. Check the binaries directly: running a wrapper here would write
-# shared state into the image.
-RUN /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296' \
-    && /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1' \
+# shared state into the image. The checks run with a temporary HOME: HOME is
+# still /root here, and codex (~/.codex) and omni (~/.omnigent) write state
+# there on every run, which must not land in a published layer.
+RUN CHECK_HOME="$(mktemp -d)" \
+    && HOME="${CHECK_HOME}" /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296' \
+    && HOME="${CHECK_HOME}" /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1' \
     && chmod +x /usr/local/bin/pi /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh /usr/local/bin/pi-agent-share-state.mjs \
     && sh -n /usr/local/bin/claude \
     && sh -n /usr/local/bin/codex \
-    # omni from the image. A temporary HOME, because omni creates
-    # $HOME/.omnigent on every run and that must not land in a layer.
+    # omni from the image.
     && ln -s /opt/omnigent/venv/bin/omni /usr/local/bin/omni \
     && ln -s /opt/omnigent/venv/bin/omnigent /usr/local/bin/omnigent \
-    && OMNI_HOME="$(mktemp -d)" \
-    && HOME="${OMNI_HOME}" omni --version | grep -q '^omnigent 0.12.0' \
-    && rm -rf "${OMNI_HOME}" \
+    && HOME="${CHECK_HOME}" omni --version | grep -q '^omnigent 0.12.0' \
     # Fail the build rather than ship an image where `pi` resolves to nothing.
     # Upstream installs the coding agent only as a transitive dependency, so npm
     # never links its bin — without the launcher, every terminal workflow dies.
     && test -x "$(command -v pi)" \
-    && pi --version \
+    && HOME="${CHECK_HOME}" pi --version \
     && tmux -V \
     # node-pty loads. This is the cross-stage ABI assertion: stage 1 compiled
     # pty.node against ITS nodejs, and this is the first moment the module is
     # asked to load under the nodejs that will actually run it.
-    && node -e 'const p=require("/usr/local/lib/node_modules/@agegr/pi-web/node_modules/node-pty"); if (typeof p.spawn !== "function") { throw new Error("node-pty has no spawn()"); } console.log("[build] node-pty loads under the runtime node");'
+    && node -e 'const p=require("/usr/local/lib/node_modules/@agegr/pi-web/node_modules/node-pty"); if (typeof p.spawn !== "function") { throw new Error("node-pty has no spawn()"); } console.log("[build] node-pty loads under the runtime node");' \
+    && rm -rf "${CHECK_HOME}"
 
 ARG BUILD_VERSION=dev
 ARG BUILD_REF=unknown
