@@ -5,10 +5,11 @@
 # scripts/install.sh builds ./Containerfile first as
 # localhost/woow-podman-pi-agent:<tag> and then this file on top of it with
 # --build-arg BASE_IMAGE=<that tag>. A fresh host needs no registry image: the
-# base has never been published to GHCR (publishing is future work).
+# base is never published. .github/workflows/publish.yml builds both the same way
+# and publishes only the result, as ghcr.io/woowtech/woow-podman-pi-agent-host.
 #
 # BUILD WITH --format=docker, like the base: see the note in ./Containerfile.
-ARG BASE_IMAGE=localhost/woow-podman-pi-agent:0.12.0-r6
+ARG BASE_IMAGE=localhost/woow-podman-pi-agent:0.12.0-r7
 FROM ${BASE_IMAGE}
 
 USER root

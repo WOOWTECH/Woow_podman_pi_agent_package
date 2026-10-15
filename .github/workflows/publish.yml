@@ -1,0 +1,203 @@
+# Publish gate: build the arm64 host-control image natively, the same two steps as
+# scripts/install.sh (Containerfile, then Containerfile.host-control on top), check it,
+# and push it to GHCR under the tag the quadlet pins. Hosts pull by the arm64 manifest
+# digest, never by tag (woow_ha_version_control ADR-0005), so the digest is the release.
+#
+#   <tag>       full image (VIDEO_TOOLS=1)
+#   <tag>-slim  PI_VIDEO_TOOLS=false image (VIDEO_TOOLS=0), as install.sh names it
+#
+# Trigger: push a git tag equal to the quadlet's image tag, e.g. `git tag 0.12.0-r7`.
+# A tag already on GHCR is never overwritten; bump -rN instead. On a pull request the
+# same build and checks run without pushing, so the arm64 build is proven before merge.
+# quadlet-ci.yml is vendored and checksummed, so this lives in its own file.
+name: publish
+
+on:
+  push:
+    tags: ['[0-9]*.[0-9]*.[0-9]*-r[0-9]*']
+  pull_request:
+    paths:
+      - 'Containerfile'
+      - 'Containerfile.host-control'
+      - 'cli-runtime/**'
+      - 'rootfs/**'
+      - 'patches/**'
+      - 'quadlet/pi-web.container'
+      - '.github/workflows/publish.yml'
+
+permissions:
+  contents: write                  # the GitHub release that records the digests
+  packages: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/woowtech/woow-podman-pi-agent-host
+  PUBLISH: ${{ github.event_name == 'push' }}
+
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm      # native arm64: the H618 boxes are the consumers
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: full
+            suffix: ''
+            video_tools: '1'
+          - variant: slim
+            suffix: '-slim'
+            video_tools: '0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install podman and skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman skopeo
+          podman --version
+
+      - name: The image tag (and, on a tag push, the git tag) is the quadlet's
+        run: |
+          tag=$(sed -n 's/^Image=localhost\/woow-podman-pi-agent-host:\(.*\)@@PI_IMAGE_VARIANT@@$/\1/p' quadlet/pi-web.container)
+          [ -n "$tag" ] || { echo "no image tag in quadlet/pi-web.container" >&2; exit 1; }
+          if [ "$PUBLISH" = true ] && [ "$tag" != "$GITHUB_REF_NAME" ]; then
+            echo "git tag $GITHUB_REF_NAME does not match the quadlet's image tag $tag" >&2
+            exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "ITAG=$tag${{ matrix.suffix }}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: The tag is not on GHCR yet
+        if: env.PUBLISH == 'true'
+        run: |
+          if skopeo inspect --raw "docker://$IMAGE:$ITAG" >/dev/null 2>&1; then
+            echo "$IMAGE:$ITAG already exists; published tags are never overwritten, bump -rN" >&2
+            exit 1
+          fi
+
+      # --format=docker keeps HEALTHCHECK (see Containerfile).
+      - name: Build the base and the host-control image
+        run: |
+          base="localhost/woow-podman-pi-agent:$ITAG"
+          podman build --format=docker --platform linux/arm64 \
+            --build-arg VIDEO_TOOLS=${{ matrix.video_tools }} \
+            --build-arg BUILD_VERSION="$ITAG" --build-arg BUILD_REF="$GITHUB_SHA" \
+            -t "$base" -f Containerfile .
+          podman build --format=docker --platform linux/arm64 \
+            --build-arg BASE_IMAGE="$base" \
+            --label org.opencontainers.image.version="$ITAG" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t "$IMAGE:$ITAG" -f Containerfile.host-control .
+
+      - name: The image carries the pinned CLIs
+        run: |
+          run() { podman run --rm --network none --entrypoint "$1" "$IMAGE:$ITAG" "${@:2}"; }
+          run /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296'
+          run /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1'
+          run sh -c 'HOME=$(mktemp -d) omni --version' | grep -q '^omnigent 0.12.0'
+          run pi --version
+          run tmux -V
+          # The quadlet mounts the volume that holds HOME; here it is an empty anonymous one.
+          run sh -c 'HOME=/tmp podman --version'
+          run systemctl --version | head -n1
+
+      # The image is public: account state, keys and Omnigent registrations come from the
+      # pi-agent-data volume at run time, never from a layer.
+      - name: The image carries no agent or account state
+        run: |
+          podman run --rm --network none --entrypoint bash "$IMAGE:$ITAG" -c '
+            set -u
+            if [ -n "$(ls -A /data/pi-agent 2>/dev/null)" ]; then
+              echo "/data/pi-agent is not empty:" >&2; ls -la /data/pi-agent >&2; exit 1
+            fi
+            found=$(find /root /home /data /tmp /var/tmp -mindepth 1 \
+              \( -name .omnigent -o -name .claude -o -name .claude.json -o -name .codex \
+                 -o -name .pi -o -name auth.json -o -name ".credentials*" -o -name "*.pem" -o -name "*.key" \) 2>/dev/null)
+            if [ -n "$found" ]; then
+              echo "state in the image:" >&2
+              for f in $found; do ls -laR "$f" >&2; done
+              exit 1
+            fi
+          '
+
+      # PI_WEB_HOSTNAME as in quadlet/pi-web.container: pi-web binds the container's
+      # loopback by default, which a published port cannot reach.
+      - name: pi-web starts and answers on 30141
+        run: |
+          podman run -d --name pi-web-check -p 127.0.0.1:30141:30141 \
+            -e PI_WEB_HOSTNAME=0.0.0.0 -e VIDEO_PIPELINE_ENABLED=false "$IMAGE:$ITAG"
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:30141/api/home; then
+              echo "pi-web answered 200"; podman rm -f pi-web-check >/dev/null; exit 0
+            fi
+            sleep 5
+          done
+          podman logs --tail 50 pi-web-check >&2
+          exit 1
+
+      - name: Reject oversized image layers
+        run: |
+          podman save --format oci-archive -o /tmp/pi-agent.oci "$IMAGE:$ITAG"
+          mkdir -p /tmp/pi-agent-oci
+          tar -xf /tmp/pi-agent.oci -C /tmp/pi-agent-oci
+          node tests/assert-podman-layer-sizes.mjs /tmp/pi-agent-oci
+          rm -rf /tmp/pi-agent.oci /tmp/pi-agent-oci
+
+      - name: Push and check the arm64 manifest digest
+        if: env.PUBLISH == 'true'
+        run: |
+          for _ in 1 2 3; do
+            podman push --digestfile digest "$IMAGE:$ITAG" && break
+            sleep 15
+          done
+          digest=$(cat digest)
+          case "$digest" in sha256:*) ;; *) echo "no digest from push: '$digest'" >&2; exit 1 ;; esac
+          arch=$(skopeo inspect "docker://$IMAGE@$digest" | jq -r .Architecture)
+          [ "$arch" = arm64 ] || { echo "expected arm64, got $arch" >&2; exit 1; }
+          echo "$IMAGE:$ITAG@$digest" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: arm64
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      # A single-arch push yields a plain manifest, so each tag's digest is the arm64
+      # manifest digest that ADR-0005 pins.
+      - name: Release notes carry the pinned references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+          {
+            echo "Image: \`$IMAGE\`, arm64 manifest digests (pin these):"
+            echo
+            echo '```'
+            for t in "$GITHUB_REF_NAME" "$GITHUB_REF_NAME-slim"; do
+              info=$(skopeo inspect "docker://$IMAGE:$t")
+              [ "$(jq -r .Architecture <<<"$info")" = arm64 ] || { echo "$t is not arm64" >&2; exit 1; }
+              echo "$IMAGE:$t@$(jq -r .Digest <<<"$info")"
+            done
+            echo '```'
+            echo
+            echo "\`$GITHUB_REF_NAME\` is the full image, \`$GITHUB_REF_NAME-slim\` the PI_VIDEO_TOOLS=false one."
+            echo "Built from $GITHUB_SHA on ubuntu-24.04-arm."
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md

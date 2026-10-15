@@ -9,10 +9,12 @@
 # localhost/woow-podman-pi-agent:<tag> (the tag comes from quadlet/pi-web.container),
 # then builds Containerfile.host-control on top of it:
 #
-#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r6 -f Containerfile .
+#   podman build --format=docker -t localhost/woow-podman-pi-agent:0.12.0-r7 -f Containerfile .
 #
-# Never tag a local build with a ghcr.io/... name: the base is not published, and
-# a registry-looking local tag hides that from every fresh host.
+# Never tag a local build with a ghcr.io/... name: only the host-control image is
+# published (by .github/workflows/publish.yml, as ghcr.io/woowtech/
+# woow-podman-pi-agent-host), the base is not, and a registry-looking local tag
+# hides that from every fresh host.
 #
 # This is NOT the k3s image with Kubernetes bits removed. It is built for a
 # different runtime and the differences are deliberate:
@@ -62,7 +64,7 @@
 # NodeSource suite in the same build, and the runtime stage re-requires the
 # module as a build-time assertion (see "node-pty loads" below), so an ABI
 # mismatch fails the build instead of surfacing as a dead terminal in the UI.
-FROM debian:bookworm-slim AS piweb-builder
+FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS piweb-builder
 
 ENV LANG=C.UTF-8 \
     NODE_ENV=production \
@@ -137,6 +139,28 @@ RUN npm ci --omit=dev --prefix=/opt/pi-clis/codex \
     && chmod -R a+rX,go-w /opt/pi-clis/codex \
     && rm -rf /tmp/npm-cache
 
+# The Omnigent CLI (`omni`), which connects this agent to an Omnigent server as
+# a host. Before 0.12.0-r7 it was installed by hand with `uv tool install` into
+# the pi-agent-data volume, so a new volume had no `omni` and the version was
+# whatever PyPI served that day. omnigent needs Python >= 3.12 and bookworm has
+# 3.11, so uv installs a standalone CPython next to the venv. Every dependency
+# is pinned with hashes in cli-runtime/omnigent/requirements.txt (regenerate
+# with `uv pip compile --universal --python-version 3.12 --generate-hashes`).
+# 0.12.0 is the version of the WOOWTECH Omnigent server and runner images.
+# The paths must stay the same in stage 2: the venv points at this Python.
+COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /usr/local/bin/uv
+COPY cli-runtime/omnigent/requirements.txt /opt/omnigent/requirements.txt
+RUN set -euo pipefail; \
+    export UV_PYTHON_INSTALL_DIR=/opt/omnigent/python UV_NO_CACHE=1; \
+    uv python install 3.12.14; \
+    uv venv --python 3.12.14 --no-python-downloads /opt/omnigent/venv; \
+    uv pip install --python /opt/omnigent/venv/bin/python --require-hashes --no-deps \
+       -r /opt/omnigent/requirements.txt; \
+    OMNI_HOME="$(mktemp -d)"; \
+    HOME="${OMNI_HOME}" /opt/omnigent/venv/bin/omni --version | grep -q '^omnigent 0.12.0'; \
+    rm -rf "${OMNI_HOME}"; \
+    chmod -R a+rX,go-w /opt/omnigent
+
 # Validate the installed native module by loading it and checking its API.
 # Current node-pty packages store platform binaries under `prebuilds/`, not
 # `build/Release/pty.node`; checking that old node-gyp output path rejects a
@@ -176,7 +200,7 @@ RUN set -euo pipefail; \
 # =============================================================================
 # Stage 2 — the runtime image. No compiler, no npm registry access.
 # =============================================================================
-FROM debian:bookworm-slim
+FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 
 # Runtime npm installs (Pi Web package management) run as pi; keep the cache in the writable persistent home, not root-owned /tmp.
 ENV LANG=C.UTF-8 \
@@ -261,28 +285,39 @@ COPY --from=piweb-builder /opt/piweb/lib/node_modules /usr/local/lib/node_module
 COPY --from=piweb-builder /opt/piweb/bin              /usr/local/bin
 COPY --from=piweb-builder /opt/pi-clis/claude /opt/pi-clis/claude
 COPY --from=piweb-builder /opt/pi-clis/codex /opt/pi-clis/codex
+# Python and the omnigent venv in separate layers, for the same slow-pull reason.
+COPY --from=piweb-builder /opt/omnigent/python /opt/omnigent/python
+COPY --from=piweb-builder /opt/omnigent/venv /opt/omnigent/venv
 
 COPY rootfs/ /
 
 # /usr/local/bin/claude and /usr/local/bin/codex are wrappers from rootfs that
 # refresh the shared Pi Web MCP/skills state and then exec these pinned
 # binaries. Check the binaries directly: running a wrapper here would write
-# shared state into the image.
-RUN /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296' \
-    && /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1' \
+# shared state into the image. The checks run with a temporary HOME: HOME is
+# still /root here, and codex (~/.codex) and omni (~/.omnigent) write state
+# there on every run, which must not land in a published layer.
+RUN CHECK_HOME="$(mktemp -d)" \
+    && HOME="${CHECK_HOME}" /opt/pi-clis/claude/node_modules/.bin/claude --version | grep -q '^2.1.296' \
+    && HOME="${CHECK_HOME}" /opt/pi-clis/codex/node_modules/.bin/codex --version | grep -q '0.162.1' \
     && chmod +x /usr/local/bin/pi /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/pi-web-start.sh /usr/local/bin/video-tools-init.sh /usr/local/bin/pi-agent-share-state.mjs \
     && sh -n /usr/local/bin/claude \
     && sh -n /usr/local/bin/codex \
+    # omni from the image.
+    && ln -s /opt/omnigent/venv/bin/omni /usr/local/bin/omni \
+    && ln -s /opt/omnigent/venv/bin/omnigent /usr/local/bin/omnigent \
+    && HOME="${CHECK_HOME}" omni --version | grep -q '^omnigent 0.12.0' \
     # Fail the build rather than ship an image where `pi` resolves to nothing.
     # Upstream installs the coding agent only as a transitive dependency, so npm
     # never links its bin — without the launcher, every terminal workflow dies.
     && test -x "$(command -v pi)" \
-    && pi --version \
+    && HOME="${CHECK_HOME}" pi --version \
     && tmux -V \
     # node-pty loads. This is the cross-stage ABI assertion: stage 1 compiled
     # pty.node against ITS nodejs, and this is the first moment the module is
     # asked to load under the nodejs that will actually run it.
-    && node -e 'const p=require("/usr/local/lib/node_modules/@agegr/pi-web/node_modules/node-pty"); if (typeof p.spawn !== "function") { throw new Error("node-pty has no spawn()"); } console.log("[build] node-pty loads under the runtime node");'
+    && node -e 'const p=require("/usr/local/lib/node_modules/@agegr/pi-web/node_modules/node-pty"); if (typeof p.spawn !== "function") { throw new Error("node-pty has no spawn()"); } console.log("[build] node-pty loads under the runtime node");' \
+    && rm -rf "${CHECK_HOME}"
 
 ARG BUILD_VERSION=dev
 ARG BUILD_REF=unknown

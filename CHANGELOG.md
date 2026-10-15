@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0-r7
+
+- Bake the Omnigent CLI into the image: `omni` and `omnigent` (omnigent 0.12.0, the version of the WOOWTECH Omnigent server and runner) in `/usr/local/bin`, from a venv on a uv-installed CPython 3.12.14 under `/opt/omnigent`. Every dependency is pinned with hashes in `cli-runtime/omnigent/requirements.txt`. Before this, `omni` existed only where someone had run `uv tool install omnigent` into the volume, at whatever version PyPI served. A copy in the persistent home's `.local/bin` still takes precedence.
+- Pin both `debian:bookworm-slim` stages and the uv image by digest.
+- Stop shipping `/root/.codex`: the runtime-stage version checks of claude, codex, omni and pi now run with a temporary HOME, so nothing they write lands in a layer (found by the publish workflow's state check; present since the codex check was added).
+- Publish the arm64 host-control image to `ghcr.io/woowtech/woow-podman-pi-agent-host` (`<tag>` and `<tag>-slim`) from a version tag, with the arm64 manifest digests in the GitHub release. `install.sh` still builds locally.
+
 ## 0.12.0-r6
 
 - Fix Pi Web global MCP servers not reaching Claude Code or Codex in the browser terminal. The refresh launchers lived in `~/.local/bin`, but the terminal is a login shell whose rebuilt PATH skipped that directory, so `claude mcp list` and `codex mcp list` stayed empty until the container restarted (same defect measured on the HA add-on). `/usr/local/bin/claude` and `/usr/local/bin/codex` are now wrappers that refresh the shared MCP/skills state before every launch, whatever PATH the caller has, then exec the pinned binaries.
