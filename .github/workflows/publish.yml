@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-24.04-arm      # native arm64: the H618 boxes are the consumers
     timeout-minutes: 90
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - variant: full
@@ -132,10 +132,12 @@ jobs:
             fi
           '
 
+      # PI_WEB_HOSTNAME as in quadlet/pi-web.container: pi-web binds the container's
+      # loopback by default, which a published port cannot reach.
       - name: pi-web starts and answers on 30141
         run: |
           podman run -d --name pi-web-check -p 127.0.0.1:30141:30141 \
-            -e VIDEO_PIPELINE_ENABLED=false "$IMAGE:$ITAG"
+            -e PI_WEB_HOSTNAME=0.0.0.0 -e VIDEO_PIPELINE_ENABLED=false "$IMAGE:$ITAG"
           for _ in $(seq 1 60); do
             if curl -fsS -o /dev/null http://127.0.0.1:30141/api/home; then
               echo "pi-web answered 200"; podman rm -f pi-web-check >/dev/null; exit 0
