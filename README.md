@@ -55,7 +55,7 @@ What is **identical** on purpose: the `pi` launcher wrapper, the CJK path patch,
 ---
 
 ## Install
-**Image revision 0.12.0-r6** includes Claude Code 2.1.296 and Codex 0.162.1 and fixes ChatGPT OAuth installation identity. It shares Pi Web-installed skills, global MCP servers, and workspace files across Pi, Claude Code and Codex; Pi plugins and extensions remain Pi-only. Each CLI is installed in its own image layer to keep registry transfers bounded. Users still complete account authorization themselves. Executables in the persistent home’s `.local/bin` take precedence.
+**Image revision 0.12.0-r7** includes Claude Code 2.1.296, Codex 0.162.1 and the Omnigent CLI (`omni`, omnigent 0.12.0), and fixes ChatGPT OAuth installation identity. It shares Pi Web-installed skills, global MCP servers, and workspace files across Pi, Claude Code and Codex; Pi plugins and extensions remain Pi-only. Each CLI is installed in its own image layer to keep registry transfers bounded. Users still complete account authorization themselves. Executables in the persistent home’s `.local/bin` take precedence.
 
 
 Requires rootless Podman ≥ 4.4 (Quadlet; tested with 4.9.3 on Ubuntu 24.04),
@@ -99,11 +99,17 @@ causes downtime.
 | `--no-start` | install the units and `daemon-reload`, but start or restart nothing |
 | `--dry-run` | render, validate and report what would change; touch nothing |
 
-The tag is `<pi-web version>-r<package revision>` (today `0.12.0-r6`) and is
-pinned in `quadlet/pi-web.container`; `Pull=never`, because the images exist
-only on the host that built them. The base image is not published to any
-registry; publishing it to GHCR (so hosts can skip the base build) is future
-work.
+The tag is `<pi-web version>-r<package revision>` (today `0.12.0-r7`) and is
+pinned in `quadlet/pi-web.container`; `Pull=never`, because `install.sh` uses
+the images built on the host itself.
+
+The arm64 host-control image is also published as
+`ghcr.io/woowtech/woow-podman-pi-agent-host` by `.github/workflows/publish.yml`
+when a git tag equal to the quadlet's image tag is pushed (e.g. `0.12.0-r7`):
+`<tag>` is the full image and `<tag>-slim` the `PI_VIDEO_TOOLS=false` one. Each
+release's notes carry both arm64 manifest digests; pull by digest, not by tag.
+A published tag is never overwritten: change the image, bump `-rN`. The base
+image is not published.
 
 First boot on a fresh volume downloads roughly 720MB of video tooling in the
 background. **The UI is usable throughout.**
@@ -179,7 +185,7 @@ cd Woow_podman_pi_agent_package && git pull
 
 The old files are copied to `~/.local/state/woow-quadlet/pi-agent/` (`replaced/`,
 `adopted/`) before they are overwritten. Mounts, environment, network, volume
-and port stay the same; only the image tag changes (`:latest` → `:0.12.0-r6`)
+and port stay the same; only the image tag changes (`:latest` → `:0.12.0-r7`)
 and the auto-update label goes. To roll back, copy the old files back and run
 `systemctl --user daemon-reload && systemctl --user restart pi-web.service`;
 the old `:latest` image is still there.
